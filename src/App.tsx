@@ -123,6 +123,29 @@ const tx = (key:string, lang:"en"|"ar") => TR[key]?.[lang] ?? key
 
 type Screen = "login"|"signup"|"forgot"|"onboarding"|"goalsetup"|"home"|"invest"|"learn"|"lesson"|"goals"|"rewards"|"dailyreview"|"notifications"|"profile"|"settings"|"security"|"help"
 
+// ─── Progression ─────────────────────────────────────────────────────────────
+const LEVEL_NAMES = ["Beginner", "Saver", "Rising Investor", "Confident Investor", "Strategist"]
+const PTS_PER_LEVEL = 1000
+const PTS_GOAL = 75
+const PTS_INVEST = 100
+const PTS_TOUR = 25
+
+function progression(points:number) {
+  const level = Math.min(LEVEL_NAMES.length, Math.floor(points / PTS_PER_LEVEL) + 1)
+  const nextAt = level * PTS_PER_LEVEL
+  const floor  = (level - 1) * PTS_PER_LEVEL
+  const maxed  = level >= LEVEL_NAMES.length
+  return {
+    level,
+    name: LEVEL_NAMES[level - 1],
+    nextAt,
+    toNext: maxed ? 0 : nextAt - points,
+    pct: maxed ? 100 : Math.round(((points - floor) / PTS_PER_LEVEL) * 100),
+    maxed,
+    cashback: Math.floor(points / 20),
+  }
+}
+
 // ─── Primitives ───────────────────────────────────────────────────────────────
 function Ring({ pct, size=60, w=5, color=GR }: { pct:number; size?:number; w?:number; color?:string }) {
   const r=(size-w*2)/2, c=2*Math.PI*r
@@ -601,6 +624,10 @@ function HomeScreen({ nav, userGoals, builtinActive, homeCardGoalId, setHomeCard
   onStartNewGoal:()=>void;
 }) {
   const { t, lang } = useT()
+  const { profile, holdings } = useApp()
+  const stats = profile?.stats ?? { points:0, level:1, streakDays:0 }
+  const prog = progression(stats.points)
+  const invested = holdings.reduce((n,h)=>n+h.amount, 0)
 
   const builtinGoalEntries: GoalEntry[] = BUILTIN_GOALS.map((g,i) => ({ id:`builtin-${i}`, name:g.title, budget:"", start:"", end:"", type:"builtin" as const, pct:g.pct })).filter((_,i) => builtinActive[i])
   const allDisplayGoals: GoalEntry[] = [...userGoals, ...builtinGoalEntries]
@@ -641,13 +668,13 @@ function HomeScreen({ nav, userGoals, builtinActive, homeCardGoalId, setHomeCard
           <Ic n="bell" c={t.text} s={18}/>
           <div style={{ position:"absolute", top:8, right:8, width:8, height:8, borderRadius:4, background:ERR, border:"1.5px solid white" }}/>
         </button>
-        <div onClick={()=>nav("profile")} style={{ width:38, height:38, borderRadius:19, background:`linear-gradient(135deg,${GR},${GRD})`, display:"flex", alignItems:"center", justifyContent:"center", color:"white", fontSize:13, fontWeight:800, cursor:"pointer" }}>LM</div>
+        <div onClick={()=>nav("profile")} style={{ width:38, height:38, borderRadius:19, background:`linear-gradient(135deg,${GR},${GRD})`, display:"flex", alignItems:"center", justifyContent:"center", color:"white", fontSize:13, fontWeight:800, cursor:"pointer" }}>{profile?.initials ?? "NB"}</div>
       </div>
     </div>
 
     <div style={{ padding:"14px 20px 0" }}>
       <div style={{ fontSize:13, color:t.sub }}>{tx("gmorn",lang)}</div>
-      <div style={{ fontSize:20, fontWeight:800, color:t.text, marginTop:2 }}>Lara Mahrous</div>
+      <div style={{ fontSize:20, fontWeight:800, color:t.text, marginTop:2 }}>{profile?.displayName ?? "there"}</div>
     </div>
 
     {/* Goal card */}
@@ -739,7 +766,12 @@ function HomeScreen({ nav, userGoals, builtinActive, homeCardGoalId, setHomeCard
 
     {/* Stat pills */}
     <div style={{ display:"flex", gap:8, padding:"12px 16px 0", overflowX:"auto" as const }}>
-      {([{icon:"refresh",val:"7 days",label:"Streak",color:"#F97316"},{icon:"award",val:"2,450 pts",label:"Points",color:GD},{icon:"trending",val:"Level 3",label:"Rising Investor",color:t.brand}]).map(st=>(
+      {([
+        {icon:"refresh",val:`${stats.streakDays} ${stats.streakDays===1?"day":"days"}`,label:"Streak",color:"#F97316"},
+        {icon:"award",val:`${stats.points.toLocaleString()} pts`,label:"Points",color:GD},
+        {icon:"trending",val:`Level ${prog.level}`,label:prog.name,color:t.brand},
+        {icon:"wallet",val:`EGP ${invested.toLocaleString()}`,label:holdings.length===1?"Invested":`Invested · ${holdings.length}`,color:t.brand},
+      ]).map(st=>(
         <div key={st.label} style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, border:`1px solid ${t.stroke}`, borderRadius:16, padding:"10px 14px", flexShrink:0, boxShadow:`0 1px 4px rgba(0,0,0,${t.dm?0.2:0.06})`, display:"flex", gap:8, alignItems:"center" }}>
           <Ic n={st.icon} c={st.color} s={15}/>
           <div><div style={{ fontSize:13, fontWeight:700, color:t.text }}>{st.val}</div><div style={{ fontSize:10, color:t.sub }}>{st.label}</div></div>
@@ -841,6 +873,8 @@ function SubscribeSheet({ product, isFund, onClose }: {
         "limits.remaining": Math.max(0, remaining - value),
         "flags.hasSubscribed": true,
         "flags.funnelStage": "first_subscription",
+        "stats.points": (profile?.stats.points ?? 0) + PTS_INVEST,
+        "stats.level": progression((profile?.stats.points ?? 0) + PTS_INVEST).level,
       })
       setStep("done")
     } catch {
@@ -1696,10 +1730,26 @@ function GoalsScreen({ userGoals, setUserGoals, builtinActive, setBuiltinActive,
 // ─── RewardsScreen — earn/redeem/benefit focus, no lesson/streak sections ─────
 function RewardsScreen() {
   const { t } = useT()
+  const { profile, holdings } = useApp()
   const redeemOptions=[{pts:100,benefit:"EGP 10 Cashback",icon:"wallet",color:GR},{pts:500,benefit:"EGP 50 Cashback",icon:"gift",color:t.brand},{pts:1000,benefit:"Partner Discount",icon:"award",color:GD}]
   const partners=[{name:"Carrefour",offer:"5% off groceries",tag:"Cashback",icon:"tag"},{name:"B.TECH",offer:"EGP 200 voucher",tag:"Voucher",icon:"credit"},{name:"Fawry",offer:"Zero transfer fees",tag:"Offer",icon:"send"},{name:"Uber Egypt",offer:"3 free rides",tag:"Reward",icon:"refresh"}]
-  const activities=[{label:"Completed certificate lesson",pts:"+50 pts",icon:"book"},{label:"Set up first financial goal",pts:"+75 pts",icon:"target"},{label:"Made first investment",pts:"+100 pts",icon:"trending"}]
-  const badges=[{name:"First Lesson",icon:"book",earned:true},{name:"First Investment",icon:"trending",earned:true},{name:"Saver Pro",icon:"wallet",earned:false},{name:"Cert. Expert",icon:"shield",earned:false}]
+  const activities = holdings.length
+    ? holdings.slice(0,4).map(h=>({
+        label:`Subscribed to ${h.productName}`,
+        pts:`+${PTS_INVEST} pts`,
+        icon: h.kind==="fund" ? "trending" : "shield",
+      }))
+    : [{label:"No activity yet — set a goal or make your first investment", pts:"", icon:"info"}]
+  const invested = holdings.reduce((n,h)=>n+h.amount, 0)
+  const badges=[
+    {name:"First Goal",       icon:"target",   earned: !!profile?.flags.firstGoalSet},
+    {name:"First Investment", icon:"trending", earned: holdings.length > 0},
+    {name:"Saver Pro",        icon:"wallet",   earned: invested >= 25000},
+    {name:"Diversified",      icon:"shield",   earned: holdings.some(h=>h.kind==="certificate") && holdings.some(h=>h.kind==="fund")},
+  ]
+
+  const stats = profile?.stats ?? { points:0, level:1, streakDays:0 }
+  const prog = progression(stats.points)
 
   return <div style={{ background:"transparent", minHeight:"100%" }}>
     {/* Hero */}
@@ -1707,21 +1757,21 @@ function RewardsScreen() {
       <div style={{ fontSize:20, fontWeight:800, marginBottom:20 }}>My Rewards</div>
       <div id="tut-rewards-points" style={{ display:"flex", alignItems:"center", gap:16, marginBottom:16 }}>
         <div style={{ width:62, height:62, borderRadius:31, background:GD, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, boxShadow:`0 6px 20px ${GD}60` }}><Ic n="award" c="white" s={28}/></div>
-        <div><div style={{ fontSize:36, fontWeight:800, lineHeight:1 }}>2,450</div><div style={{ fontSize:13, color:"rgba(255,255,255,0.55)", marginTop:4 }}>Total Points</div></div>
+        <div><div style={{ fontSize:36, fontWeight:800, lineHeight:1 }}>{stats.points.toLocaleString()}</div><div style={{ fontSize:13, color:"rgba(255,255,255,0.55)", marginTop:4 }}>Total Points</div></div>
         <div style={{ marginLeft:"auto", textAlign:"right" as const }}>
-          <div style={{ fontSize:10, fontWeight:800, color:t.gold, letterSpacing:1.8 }}>LEVEL 3</div>
-          <div style={{ fontSize:14, fontWeight:700, marginTop:3 }}>Rising Investor</div>
-          <div style={{ fontSize:11, color:"rgba(255,255,255,0.4)", marginTop:2 }}>550 pts to Level 4</div>
+          <div style={{ fontSize:10, fontWeight:800, color:t.gold, letterSpacing:1.8 }}>LEVEL {prog.level}</div>
+          <div style={{ fontSize:14, fontWeight:700, marginTop:3 }}>{prog.name}</div>
+          <div style={{ fontSize:11, color:"rgba(255,255,255,0.4)", marginTop:2 }}>{prog.maxed ? "Top level reached" : `${prog.toNext.toLocaleString()} pts to Level ${prog.level+1}`}</div>
         </div>
       </div>
-      <div style={{ display:"flex", justifyContent:"space-between", fontSize:10, color:"rgba(255,255,255,0.38)", marginBottom:5 }}><span>Level 3</span><span>Level 4 · 3,000 pts</span></div>
-      <div style={{ height:6, background:"rgba(255,255,255,0.1)", borderRadius:4, overflow:"hidden", marginBottom:16 }}><div style={{ width:"82%", height:6, background:`linear-gradient(90deg,${GD},${GDS})`, borderRadius:4 }}/></div>
+      <div style={{ display:"flex", justifyContent:"space-between", fontSize:10, color:"rgba(255,255,255,0.38)", marginBottom:5 }}><span>Level {prog.level}</span><span>{prog.maxed ? "Max" : `Level ${prog.level+1} · ${prog.nextAt.toLocaleString()} pts`}</span></div>
+      <div style={{ height:6, background:"rgba(255,255,255,0.1)", borderRadius:4, overflow:"hidden", marginBottom:16 }}><div style={{ width:`${prog.pct}%`, height:6, background:`linear-gradient(90deg,${GD},${GDS})`, borderRadius:4, transition:"width 0.5s ease" }}/></div>
       {/* Cashback CTA */}
       <div style={{ background:"rgba(255,255,255,0.08)", borderRadius:14, padding:"14px 16px", display:"flex", justifyContent:"space-between", alignItems:"center", border:"1px solid rgba(255,255,255,0.1)" }}>
         <div>
           <div style={{ fontSize:12, color:"rgba(255,255,255,0.6)", marginBottom:4 }}>Redeem your points for cashback, discounts and rewards.</div>
           <div style={{ fontSize:11, color:"rgba(255,255,255,0.45)" }}>Available Cashback</div>
-          <div style={{ fontSize:28, fontWeight:800, color:t.gold }}>EGP 120</div>
+          <div style={{ fontSize:28, fontWeight:800, color:t.gold }}>EGP {prog.cashback.toLocaleString()}</div>
         </div>
         <button id="tut-rewards-redeem" style={{ padding:"12px 18px", borderRadius:999, background:GD, color:"white", border:"none", fontSize:13, fontWeight:700, cursor:"pointer", flexShrink:0 }}>Redeem Points</button>
       </div>
@@ -2432,7 +2482,13 @@ export default function App() {
   const handleGoalSet = (entry: GoalEntry) => {
     setUserGoals(p => [...p, entry])
     setHomeCardGoalId(prev => prev ?? entry.id)
-    patch({ "flags.firstGoalSet": true, "flags.onboardingComplete": true, "flags.funnelStage": "understands" })
+    patch({
+      "flags.firstGoalSet": true,
+      "flags.onboardingComplete": true,
+      "flags.funnelStage": "understands",
+      "stats.points": (profile?.stats.points ?? 0) + PTS_GOAL,
+      "stats.level": progression((profile?.stats.points ?? 0) + PTS_GOAL).level,
+    })
     if (uid) {
       addGoal(uid, { name:entry.name, budget:entry.budget, start:entry.start, end:entry.end, type:entry.type, pct:entry.pct ?? 0 })
         .catch(()=>{ /* keep the local entry */ })
@@ -2547,7 +2603,7 @@ export default function App() {
 
             {showNav && <BottomNav active={screen} onSelect={setScreen}/>}
             {showTour && tour && tourKey && (
-              <TutorialOverlay steps={tour} frameRef={frameRef} onDone={()=>patch({ [`flags.toursSeen.${tourKey}`]: true })}/>
+              <TutorialOverlay steps={tour} frameRef={frameRef} onDone={()=>patch({ [`flags.toursSeen.${tourKey}`]: true, "stats.points": (profile?.stats.points ?? 0) + PTS_TOUR, "stats.level": progression((profile?.stats.points ?? 0) + PTS_TOUR).level })}/>
             )}
           </div>
         </div>
