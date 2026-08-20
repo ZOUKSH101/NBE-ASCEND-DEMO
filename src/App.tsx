@@ -2372,13 +2372,20 @@ export default function App() {
       try {
         let p = await loadProfile(user.uid)
         if (!p) p = await createProfile(user.uid, user.displayName, user.email)
-        const [g, h] = await Promise.all([loadGoals(user.uid), loadHoldings(user.uid)])
         if (cancelled) return
+        // Show the app as soon as the profile is known — goals and holdings are
+        // two more round trips and nothing on first paint depends on them.
         setProfile(p)
-        setUserGoals(g.map(d=>({ id:d.id, name:d.name, budget:d.budget, start:d.start, end:d.end, type:d.type, pct:d.pct })))
-        setHoldings(h)
-        setHomeCardGoalId(prev => prev ?? g[0]?.id ?? null)
         setScreen(p.flags.onboardingComplete ? "home" : "onboarding")
+        setProfileReady(true)
+        Promise.all([loadGoals(user.uid), loadHoldings(user.uid)])
+          .then(([g, h]) => {
+            if (cancelled) return
+            setUserGoals(g.map(d=>({ id:d.id, name:d.name, budget:d.budget, start:d.start, end:d.end, type:d.type, pct:d.pct })))
+            setHoldings(h)
+            setHomeCardGoalId(prev => prev ?? g[0]?.id ?? null)
+          })
+          .catch(()=>{ /* lists stay empty until the next load */ })
       } catch {
         if (!cancelled) { setProfile(DEFAULT_PROFILE(user.displayName, user.email)); setScreen("onboarding") }
       } finally {

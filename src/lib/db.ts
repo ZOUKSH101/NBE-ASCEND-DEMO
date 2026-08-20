@@ -1,5 +1,5 @@
 import {
-  doc, getDoc, setDoc, updateDoc, collection, addDoc, getDocs,
+  doc, getDoc, setDoc, collection, addDoc, getDocs,
   serverTimestamp, query, orderBy,
 } from "firebase/firestore"
 import { db, firebaseConfigured } from "./firebase"
@@ -146,7 +146,17 @@ export async function patchProfile(uid:string, patch:Record<string,unknown>): Pr
     writeLS(LS.profile(uid), next)
     return
   }
-  await updateDoc(doc(db, "users", uid), patch)
+  // setDoc+merge instead of updateDoc: updateDoc rejects outright if the user
+  // document does not exist yet, which silently swallowed every flag write
+  // whenever the initial create had not landed. merge:true creates or merges.
+  const nested: Record<string, any> = {}
+  for (const [path, value] of Object.entries(patch)) {
+    const parts = path.split(".")
+    let node = nested
+    for (const seg of parts.slice(0, -1)) node = node[seg] ??= {}
+    node[parts[parts.length - 1]] = value
+  }
+  await setDoc(doc(db, "users", uid), nested, { merge: true })
 }
 
 export const setTourSeen  = (uid:string, key:TourKey) => patchProfile(uid, { [`flags.toursSeen.${key}`]: true })

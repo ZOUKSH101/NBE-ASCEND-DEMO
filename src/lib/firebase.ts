@@ -1,6 +1,9 @@
 import { initializeApp, type FirebaseApp } from "firebase/app"
 import { getAuth, type Auth } from "firebase/auth"
-import { getFirestore, type Firestore } from "firebase/firestore"
+import {
+  initializeFirestore, persistentLocalCache, persistentSingleTabManager,
+  type Firestore,
+} from "firebase/firestore"
 
 const cfg = {
   apiKey:            (import.meta.env.VITE_FIREBASE_API_KEY ?? "").trim(),
@@ -21,7 +24,11 @@ let dbInstance: Firestore | null = null
 if (firebaseConfigured) {
   app = initializeApp(cfg)
   authInstance = getAuth(app)
-  dbInstance = getFirestore(app)
+  // IndexedDB cache: after the first visit, reads resolve locally and the
+  // network round trip happens in the background instead of blocking startup.
+  dbInstance = initializeFirestore(app, {
+    localCache: persistentLocalCache({ tabManager: persistentSingleTabManager({}) }),
+  })
 }
 
 export const auth = authInstance
