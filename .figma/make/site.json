@@ -1,0 +1,10 @@
+{
+  "description": "Empower teenagers and young adults to manage, save, and invest money through engaging financial education, personalized goals, and rewarding experiences.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
