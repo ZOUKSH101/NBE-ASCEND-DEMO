@@ -2404,10 +2404,15 @@ export default function App() {
     if (uid) patchProfile(uid, p).catch(()=>{ /* offline: local state still applied */ })
   }, [uid])
 
+  /* Optimistic. Firestore's addDoc only settles on server ack, so awaiting it
+     hangs the UI whenever the backend is unreachable — write behind instead. */
   const buy = useCallback(async (h:Omit<HoldingDoc,"id">) => {
     if (!uid) return
-    const saved = await addHolding(uid, h)
-    setHoldings(prev => [saved, ...prev])
+    const local: HoldingDoc = { ...h, id:`local-${Date.now()}` }
+    setHoldings(prev => [local, ...prev])
+    addHolding(uid, h)
+      .then(saved => setHoldings(prev => prev.map(x => x.id===local.id ? saved : x)))
+      .catch(()=>{ /* queued by the SDK; local entry stands */ })
   }, [uid])
 
   useEffect(()=>{
@@ -2417,14 +2422,13 @@ export default function App() {
     return ()=>window.clearTimeout(id)
   }, [screen])
 
-  const handleGoalSet = async (entry: GoalEntry) => {
+  const handleGoalSet = (entry: GoalEntry) => {
     setUserGoals(p => [...p, entry])
     setHomeCardGoalId(prev => prev ?? entry.id)
     patch({ "flags.firstGoalSet": true, "flags.onboardingComplete": true, "flags.funnelStage": "understands" })
     if (uid) {
-      try {
-        await addGoal(uid, { name:entry.name, budget:entry.budget, start:entry.start, end:entry.end, type:entry.type, pct:entry.pct ?? 0 })
-      } catch { /* keep the local entry */ }
+      addGoal(uid, { name:entry.name, budget:entry.budget, start:entry.start, end:entry.end, type:entry.type, pct:entry.pct ?? 0 })
+        .catch(()=>{ /* keep the local entry */ })
     }
     setScreen("home")
   }
