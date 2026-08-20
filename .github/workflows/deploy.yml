@@ -15,8 +15,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
+       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          lfs: true
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -29,6 +31,8 @@ jobs:
 
       - name: Build
         run: npm run build
+        env:
+          FIGMA_PUBLIC_URL: /NBE-ASCEND-DEMO
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
