@@ -2053,6 +2053,12 @@ function RewardsScreen() {
 // ─── DailyReviewScreen ────────────────────────────────────────────────────────
 function DailyReviewScreen({ nav }: { nav:(s:Screen)=>void }) {
   const { t } = useT()
+  const { holdings, profile } = useApp()
+  const today = new Date()
+  const todayISO = today.toISOString().slice(0,10)
+  const boughtToday = holdings.filter(h => h.purchasedAt === todayISO)
+  const investedToday = boughtToday.reduce((n,h)=>n+h.amount, 0)
+  const investedTotal = holdings.reduce((n,h)=>n+h.amount, 0)
   const spending = [
     { label:"Food & Drinks",   amt:180, icon:"gift",    color:GR  },
     { label:"Shopping",        amt:120, icon:"tag",     color:GD  },
@@ -2070,7 +2076,7 @@ function DailyReviewScreen({ nav }: { nav:(s:Screen)=>void }) {
         <button onClick={()=>nav("home")} style={{ width:36, height:36, borderRadius:22, background:t.chip, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, display:"flex", alignItems:"center", justifyContent:"center", border:"none", cursor:"pointer", flexShrink:0 }}><Ic n="left" c={t.text} s={18}/></button>
         <div>
           <div style={{ fontSize:18, fontWeight:800, color:t.text }}>Daily Review</div>
-          <div style={{ fontSize:12, color:t.sub }}>Wednesday, August 19</div>
+          <div style={{ fontSize:12, color:t.sub }}>{today.toLocaleDateString(undefined,{ weekday:"long", month:"long", day:"numeric" })}</div>
         </div>
       </div>
     </div>
@@ -2080,14 +2086,21 @@ function DailyReviewScreen({ nav }: { nav:(s:Screen)=>void }) {
       <div style={{ fontSize:11, fontWeight:800, color:t.sub, letterSpacing:1.2, textTransform:"uppercase" as const, marginBottom:12 }}>{"Today's Activity"}</div>
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10, marginBottom:18 }}>
         {[
-          { label:"Total Spent",    val:"EGP 450",   icon:"credit",   color:ERR  },
-          { label:"Total Saved",    val:"EGP 500",   icon:"shield",   color:GR   },
-          { label:"Total Invested", val:"EGP 1,000", icon:"trending", color:GD   },
+          { label:"Spent today",    val:`EGP ${totalSpent}`,                    icon:"credit",   color:ERR  },
+          { label:"Invested today", val:`EGP ${investedToday.toLocaleString()}`, icon:"shield",   color:GR   },
+          { label:"Invested total", val:`EGP ${investedTotal.toLocaleString()}`, icon:"trending", color:GD   },
         ].map((s,i)=><div key={i} style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderRadius:18, padding:"14px 10px", display:"flex", flexDirection:"column", gap:8, boxShadow:`0 1px 5px rgba(0,0,0,${t.dm?0.2:0.06})`, border:`1px solid ${s.color}14` }}>
           <div style={{ width:34, height:34, borderRadius:10, background:`${s.color}14`, display:"flex", alignItems:"center", justifyContent:"center" }}><Ic n={s.icon} c={s.color} s={17}/></div>
           <div style={{ fontSize:13, fontWeight:800, color:s.color, lineHeight:1.1 }}>{s.val}</div>
           <div style={{ fontSize:10, color:t.sub, lineHeight:1.3 }}>{s.label}</div>
         </div>)}
+      </div>
+
+      <div style={{ display:"flex", gap:10, alignItems:"flex-start", background:`${GD}12`, border:`1px solid ${GD}30`, borderRadius:16, padding:"12px 14px", marginBottom:14 }}>
+        <Ic n="info" c={t.gold} s={16}/>
+        <div style={{ fontSize:11.5, color:t.sub, lineHeight:1.6 }}>
+          Spending below is sample data. NBE Youth does not read your card transactions yet, so only the investment figures are yours.
+        </div>
       </div>
 
       {/* Spending Breakdown */}
@@ -2144,15 +2157,36 @@ interface Notif { id:number; type:NotifType; title:string; body:string; time:str
 
 function NotificationsScreen({ nav }: { nav:(s:Screen)=>void }) {
   const { t, notifPrefs } = useT()
+  const { holdings, profile } = useApp()
   const [filter, setFilter] = useState<NotifType|null>(null)
   const allNotifs: Notif[] = [
-    { id:1, type:"reminder", title:"Daily Learning Reminder", body:"You haven't completed your lesson today. Keep your 7-day streak alive — just 4 minutes away!", time:"Just now", read:false },
-    { id:2, type:"certificate", title:"New Certificate Available", body:"The 3-Year Growth Certificate (22% p.a.) is now open for applications. Min. investment: EGP 5,000.", time:"2 hours ago", read:false },
-    { id:3, type:"growth", title:"Your Investment Is Growing", body:"Your Premium Certificate is on track. Projected profit by maturity: +EGP 2,500 on your EGP 10,000.", time:"Yesterday", read:false },
-    { id:4, type:"reminder", title:"Goal Progress Check", body:"You are 75% toward your First Investment goal. Complete one more step to unlock your reward badge.", time:"2 days ago", read:true },
-    { id:5, type:"certificate", title:"Certificate Maturity Alert", body:"Your 1-Year Premium Certificate matures in 30 days. Visit the Invest screen to renew or withdraw.", time:"3 days ago", read:true },
-    { id:6, type:"growth", title:"Points Milestone Reached", body:"You have earned 2,450 points — enough to redeem EGP 120 cashback. Head to Rewards to claim it.", time:"4 days ago", read:true },
-    { id:7, type:"reminder", title:"Quiz Available", body:"A new quiz on Understanding Loans is ready. Complete it to earn 75 bonus points.", time:"5 days ago", read:true },
+    ...(holdings.length === 0
+      ? [{ id:1, type:"reminder" as NotifType, title:"Make your first investment", body:"You have not invested yet. The Invest tab walks you through certificates and funds in plain language.", time:"Now", read:false }]
+      : holdings.slice(0,3).map((h,i)=>({
+          id: 100+i,
+          type: (h.kind === "fund" ? "growth" : "certificate") as NotifType,
+          title: h.kind === "fund" ? `${h.productName} update` : `${h.productName} on track`,
+          body: h.kind === "fund"
+            ? `EGP ${h.amount.toLocaleString()} invested. Fund values move daily — the ~${h.rate}% figure is a historical average, not a promise.`
+            : `EGP ${h.amount.toLocaleString()} at ${h.rate}% fixed${h.maturesAt ? `, maturing ${h.maturesAt}` : ""}. Projected profit: +EGP ${Math.round(h.amount*h.rate/100).toLocaleString()}.`,
+          time: h.purchasedAt,
+          read: i > 0,
+        }))),
+    ...(profile ? [{
+      id:200, type:"growth" as NotifType, title:`${profile.stats.points.toLocaleString()} points earned`,
+      body: `You are Level ${progression(profile.stats.points).level} — ${progression(profile.stats.points).name}. That converts to EGP ${progression(profile.stats.points).cashback.toLocaleString()} cashback in Rewards.`,
+      time:"Today", read:false,
+    }] : []),
+    ...(profile && !profile.flags.firstGoalSet ? [{
+      id:201, type:"reminder" as NotifType, title:"Set your first goal",
+      body:"Goals turn saving into steps you can tick off. It takes about a minute in the Goals tab.",
+      time:"Today", read:false,
+    }] : []),
+    ...(profile && profile.limits.remaining < profile.limits.cycleCap ? [{
+      id:202, type:"certificate" as NotifType, title:"Investment limit updated",
+      body:`EGP ${profile.limits.remaining.toLocaleString()} of your EGP ${profile.limits.cycleCap.toLocaleString()} limit is still available. Resets ${profile.limits.resetDate}.`,
+      time:"Today", read:true,
+    }] : []),
   ]
   const [notifs, setNotifs] = useState(allNotifs)
   const iconFor=(type:NotifType)=>type==="reminder"?"bell":type==="certificate"?"chart":"trending"

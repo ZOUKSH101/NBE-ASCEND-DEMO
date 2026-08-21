@@ -168,6 +168,18 @@ check("subscription completes", /Subscription added/i.test(text()))
 const done = btnLike("Done")
 if (done) { await click(done); await act(async()=>{await new Promise(r=>setTimeout(r,400))}) }
 
+// ── 6b. Goal card arithmetic must be real, not placeholders ────────────────
+const homeTab0 = [...document.querySelectorAll("button")].find(b => (b.textContent||"").trim() === "Home")
+if (homeTab0) { await click(homeTab0); await act(async()=>{await new Promise(r=>setTimeout(r,450))}) }
+const home = text()
+// goal budget 30,000; one 500 holding bought during the walk
+check("Saved so far reflects money invested", /EGP 500/.test(home), home.slice(0,90))
+check("target renders as formatted money", /EGP 30,000/.test(home))
+check("Still Needed = target - saved", /EGP 29,500/.test(home), "expected 29,500")
+check("percentage is derived, not hardcoded", /1\/32%|[^0-9]2%/.test(home), "500 of 30,000 = 2%")
+check("Time Left computed from the end date", /(months|days|Ended)/.test(home))
+check("no leftover placeholder totals", !/EGP 45,200|2,450 pts|Level 3/.test(home))
+
 // ── 7b. Invest becomes a tracker once you own that type ────────────────────
 const investTab2 = [...document.querySelectorAll("button")].find(b => (b.textContent||"").trim() === "Invest")
 if (investTab2) { await click(investTab2); await act(async()=>{await new Promise(r=>setTimeout(r,450))}) }
