@@ -339,7 +339,7 @@ function AuthError({ message }: { message:string|null }) {
 }
 
 function AuthHero({ title, sub }: { title:string; sub:string }) {
-  return <div style={{ background:`linear-gradient(160deg,${GRD},${GR})`, padding:"38px 28px 34px", display:"flex", flexDirection:"column", alignItems:"center", position:"relative", overflow:"hidden" }}>
+  return <div style={{ background:`linear-gradient(160deg,${GRD},${GR})`, padding:"0 28px 34px", paddingTop:"calc(38px + var(--safe-top, 0px))", display:"flex", flexDirection:"column", alignItems:"center", position:"relative", overflow:"hidden" }}>
     <div style={{ position:"absolute", top:-40, right:-40, width:160, height:160, borderRadius:"50%", background:"rgba(255,255,255,0.06)" }}/>
     <div style={{ position:"absolute", bottom:-30, left:-30, width:120, height:120, borderRadius:"50%", background:`${GD}22` }}/>
     <Logo light/>
@@ -569,7 +569,7 @@ function OnboardingScreen({ onDone, onGoalSetup, onTone }: { onDone:()=>void; on
   const bg = t.dm ? SLIDES_DARK[slide] : s.bg
   useEffect(()=>{ onTone?.(isLight) }, [isLight, onTone])
   return <div style={{ height:"100%", display:"flex", flexDirection:"column", background:bg, transition:"background 0.5s ease" }}>
-    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"14px 22px" }}>
+    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"0 22px 14px", paddingTop:"calc(14px + var(--safe-top, 0px))" }}>
       <Logo light={isLight}/>
       {slide<2 && <button onClick={onGoalSetup} style={{ fontSize:13, fontWeight:600, color:isLight?"rgba(255,255,255,0.65)":t.sub, background:"none", border:"none", cursor:"pointer" }}>Skip</button>}
     </div>
@@ -719,7 +719,7 @@ function HomeScreen({ nav, userGoals, builtinActive, homeCardGoalId, setHomeCard
   }
 
   return <div style={{ background:"transparent", minHeight:"100%" }}>
-    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"12px 20px 16px", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"0 20px 16px", paddingTop:`calc(12px + var(--safe-top, 0px))`, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
       <Logo/>
       <div style={{ display:"flex", gap:10, alignItems:"center" }}>
         <button onClick={()=>nav("notifications")} style={{ width:38, height:38, borderRadius:19, background:t.chip, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, display:"flex", alignItems:"center", justifyContent:"center", border:"none", cursor:"pointer", position:"relative" }}>
@@ -1108,7 +1108,7 @@ function InvestScreen() {
       { label:"Who decides what to buy", cert:"Nobody — the rate is fixed, there is nothing to decide.", fund:"NBE fund managers choose and adjust what the fund holds." },
     ]
     return <div style={{ background:"transparent", minHeight:"100%" }}>
-      <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"14px 20px 16px" }}>
+      <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"0 20px 16px", paddingTop:`calc(14px + var(--safe-top, 0px))` }}>
         <div style={{ display:"flex", alignItems:"center", gap:12 }}>
           <button onClick={()=>setExplainer(false)} style={{ width:36, height:36, borderRadius:999, background:t.chip, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, border:`1px solid ${t.stroke}`, display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", flexShrink:0 }}><Ic n="left" c={t.text} s={18}/></button>
           <div><div style={{ fontSize:17, fontWeight:800, color:t.text }}>Certificates vs Funds</div><div style={{ fontSize:12, color:t.sub }}>The difference, in plain words</div></div>
@@ -1148,7 +1148,7 @@ function InvestScreen() {
   if (learnMore !== null) {
     const lc = products[learnMore], ld = details[learnMore]
     return <div style={{ background:"transparent", minHeight:"100%" }}>
-      <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"14px 20px 16px" }}>
+      <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"0 20px 16px", paddingTop:`calc(14px + var(--safe-top, 0px))` }}>
         <div style={{ display:"flex", alignItems:"center", gap:12 }}>
           <button onClick={()=>setLearnMore(null)} style={{ width:36, height:36, borderRadius:999, background:t.chip, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, border:`1px solid ${t.stroke}`, display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", flexShrink:0 }}><Ic n="left" c={t.text} s={18}/></button>
           <div><div style={{ fontSize:17, fontWeight:800, color:t.text }}>{lc.name}</div><div style={{ fontSize:12, color:t.sub }}>{lc.dur} · {lc.rate}% {isFund?"avg/year":"per year"}</div></div>
@@ -1197,7 +1197,7 @@ function InvestScreen() {
 
   // ── List ──
   return <div style={{ background:"transparent", minHeight:"100%", position:"relative" }}>
-    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"16px 20px 18px" }}>
+    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"0 20px 18px", paddingTop:`calc(16px + var(--safe-top, 0px))` }}>
       <div style={{ fontSize:22, fontWeight:800, color:t.text, letterSpacing:-0.5 }}>Invest</div>
       <div style={{ fontSize:13, color:t.sub, marginTop:2 }}>Grow your money with NBE</div>
     </div>
@@ -1385,7 +1385,7 @@ function LearnScreen() {
   }
 
   return <div style={{ background:"transparent", height:"100%", display:"flex", flexDirection:"column" }}>
-    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, padding:"16px 20px 14px", borderBottom:`1px solid ${t.border}`, flexShrink:0 }}>
+    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, padding:"0 20px 14px", paddingTop:`calc(16px + var(--safe-top, 0px))`, borderBottom:`1px solid ${t.border}`, flexShrink:0 }}>
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:10 }}>
         <div>
           <div style={{ fontSize:20, fontWeight:800, color:t.text }}>Learn</div>
@@ -1443,7 +1443,7 @@ function LessonScreen({ nav }: { nav:(s:Screen)=>void }) {
   const [completed, setCompleted] = useState(false)
   const correctIdx=1, options=["EGP 800","EGP 1,000","EGP 400","EGP 2,000"]
   return <div style={{ background:"transparent", minHeight:"100%" }}>
-    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"12px 20px 16px" }}>
+    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"0 20px 16px", paddingTop:`calc(12px + var(--safe-top, 0px))` }}>
       <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:14 }}>
         <button onClick={()=>nav("learn")} style={{ width:36, height:36, borderRadius:22, background:t.chip, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, display:"flex", alignItems:"center", justifyContent:"center", border:"none", cursor:"pointer", flexShrink:0 }}><Ic n="left" c={t.text} s={18}/></button>
         <div style={{ flex:1 }}><div style={{ fontSize:11, color:t.sub, fontWeight:600 }}>Lesson 4 of 15</div></div>
@@ -1527,7 +1527,7 @@ function GoalForm({ title, initial, onSave, onCancel, saveLabel="Save Goal" }: {
     {key:"end"   as const, label:"End Date (Deadline)",  placeholder:"",                   icon:"calendar", type:"date", hint:"When do you want to reach your goal?"},
   ]
   return <div style={{ background:"transparent", minHeight:"100%" }}>
-    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"14px 20px 16px" }}>
+    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"0 20px 16px", paddingTop:`calc(14px + var(--safe-top, 0px))` }}>
       <div style={{ display:"flex", alignItems:"center", gap:12 }}>
         <button onClick={onCancel} style={{ width:36, height:36, borderRadius:22, background:t.chip, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, display:"flex", alignItems:"center", justifyContent:"center", border:"none", cursor:"pointer", flexShrink:0 }}><Ic n="left" c={t.text} s={18}/></button>
         <div style={{ fontSize:17, fontWeight:800, color:t.text }}>{title}</div>
@@ -1599,7 +1599,7 @@ function GoalsScreen({ userGoals, setUserGoals, builtinActive, setBuiltinActive,
     const isActive = builtinActive[detailIdx]
     const donePct = Math.round(ag.steps.filter(s=>s.done).length/ag.steps.length*100)
     return <div style={{ background:"transparent", minHeight:"100%" }}>
-      <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"14px 20px 16px" }}>
+      <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"0 20px 16px", paddingTop:`calc(14px + var(--safe-top, 0px))` }}>
         <div style={{ display:"flex", alignItems:"center", gap:12 }}>
           <button onClick={()=>setView("list")} style={{ width:36, height:36, borderRadius:22, background:t.chip, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, display:"flex", alignItems:"center", justifyContent:"center", border:"none", cursor:"pointer", flexShrink:0 }}><Ic n="left" c={t.text} s={18}/></button>
           <div style={{ fontSize:17, fontWeight:800, color:t.text }}>{ag.title}</div>
@@ -1679,7 +1679,7 @@ function GoalsScreen({ userGoals, setUserGoals, builtinActive, setBuiltinActive,
   const inactiveBuiltins = BUILTIN_GOALS.filter((_,i)=>!builtinActive[i])
 
   return <div style={{ background:"transparent", minHeight:"100%" }}>
-    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"16px 20px 18px", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"0 20px 18px", paddingTop:`calc(16px + var(--safe-top, 0px))`, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
       <div>
         <div style={{ fontSize:20, fontWeight:800, color:t.text }}>My Goals</div>
         <div style={{ fontSize:13, color:t.sub }}>Your financial journey, step by step</div>
@@ -1811,7 +1811,7 @@ function RewardsScreen() {
 
   return <div style={{ background:"transparent", minHeight:"100%" }}>
     {/* Hero */}
-    <div style={{ background:`linear-gradient(135deg,${GRD},#0B5D3B)`, padding:"20px 20px 24px", color:"white" }}>
+    <div style={{ background:`linear-gradient(135deg,${GRD},#0B5D3B)`, padding:"0 20px 24px", paddingTop:"calc(20px + var(--safe-top, 0px))", color:"white" }}>
       <div style={{ fontSize:20, fontWeight:800, marginBottom:20 }}>My Rewards</div>
       <div id="tut-rewards-points" style={{ display:"flex", alignItems:"center", gap:16, marginBottom:16 }}>
         <div style={{ width:62, height:62, borderRadius:31, background:GD, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, boxShadow:`0 6px 20px ${GD}60` }}><Ic n="award" c="white" s={28}/></div>
@@ -1913,7 +1913,7 @@ function DailyReviewScreen({ nav }: { nav:(s:Screen)=>void }) {
 
   return <div style={{ background:"transparent", minHeight:"100%" }}>
     {/* Header */}
-    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"14px 20px 16px" }}>
+    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"0 20px 16px", paddingTop:`calc(14px + var(--safe-top, 0px))` }}>
       <div style={{ display:"flex", alignItems:"center", gap:12 }}>
         <button onClick={()=>nav("home")} style={{ width:36, height:36, borderRadius:22, background:t.chip, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, display:"flex", alignItems:"center", justifyContent:"center", border:"none", cursor:"pointer", flexShrink:0 }}><Ic n="left" c={t.text} s={18}/></button>
         <div>
@@ -2013,7 +2013,7 @@ function NotificationsScreen({ nav }: { nav:(s:Screen)=>void }) {
   const markOne=(id:number)=>setNotifs(notifs.map(n=>n.id===id?{...n,read:true}:n))
   const filters:[string,NotifType|null][]=[["All",null],["Reminders","reminder"],["Certificates","certificate"],["Growth","growth"]]
   return <div style={{ background:"transparent", minHeight:"100%" }}>
-    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"16px 20px 18px" }}>
+    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"0 20px 18px", paddingTop:`calc(16px + var(--safe-top, 0px))` }}>
       <div style={{ display:"flex", alignItems:"center", gap:12 }}>
         <button onClick={()=>nav("home")} style={{ width:36, height:36, borderRadius:22, background:t.chip, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, display:"flex", alignItems:"center", justifyContent:"center", border:"none", cursor:"pointer", flexShrink:0 }}><Ic n="left" c={t.text} s={18}/></button>
         <div style={{ flex:1 }}>
@@ -2056,7 +2056,7 @@ function ProfileScreen({ nav }: { nav:(s:Screen)=>void }) {
   const invested = holdings.reduce((n,h)=>n+h.amount, 0)
 
   return <div style={{ background:"transparent", minHeight:"100%" }}>
-    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"16px 20px 18px" }}>
+    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"0 20px 18px", paddingTop:`calc(16px + var(--safe-top, 0px))` }}>
       <div style={{ display:"flex", alignItems:"center", gap:12 }}>
         <button onClick={()=>nav("home")} style={{ width:36, height:36, borderRadius:999, background:t.chip, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, border:`1px solid ${t.stroke}`, display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", flexShrink:0 }}><Ic n="left" c={t.text} s={18}/></button>
         <div style={{ fontSize:20, fontWeight:800, color:t.text }}>{tx("profile",lang)}</div>
@@ -2110,7 +2110,7 @@ function SettingsScreen({ nav }: { nav:(s:Screen)=>void }) {
   const set = (key:string, value:unknown) => patch({ [`prefs.${key}`]: value })
 
   return <div style={{ background:"transparent", minHeight:"100%" }}>
-    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"16px 20px 18px" }}>
+    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"0 20px 18px", paddingTop:`calc(16px + var(--safe-top, 0px))` }}>
       <div style={{ display:"flex", alignItems:"center", gap:12 }}>
         <button onClick={()=>nav("profile")} style={{ width:36, height:36, borderRadius:999, background:t.chip, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, border:`1px solid ${t.stroke}`, display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", flexShrink:0 }}><Ic n="left" c={t.text} s={18}/></button>
         <div>
@@ -2184,7 +2184,7 @@ function SecurityScreen({ nav }: { nav:(s:Screen)=>void }) {
   const [showPwForm, setShowPwForm] = useState(false)
   const [showPrivacy, setShowPrivacy] = useState(false)
   return <div style={{ background:"transparent", minHeight:"100%" }}>
-    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"16px 20px 18px" }}>
+    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"0 20px 18px", paddingTop:`calc(16px + var(--safe-top, 0px))` }}>
       <div style={{ display:"flex", alignItems:"center", gap:12 }}>
         <button onClick={()=>nav("profile")} style={{ width:36, height:36, borderRadius:22, background:t.chip, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, display:"flex", alignItems:"center", justifyContent:"center", border:"none", cursor:"pointer", flexShrink:0 }}><Ic n="left" c={t.text} s={18}/></button>
         <div style={{ fontSize:20, fontWeight:800, color:t.text }}>{tx("security",lang)}</div>
@@ -2230,7 +2230,7 @@ function HelpScreen({ nav }: { nav:(s:Screen)=>void }) {
   const [msgSent, setMsgSent] = useState(false)
   const [msg, setMsg] = useState("")
   return <div style={{ background:"transparent", minHeight:"100%" }}>
-    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"16px 20px 18px" }}>
+    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"0 20px 18px", paddingTop:`calc(16px + var(--safe-top, 0px))` }}>
       <div style={{ display:"flex", alignItems:"center", gap:12 }}>
         <button onClick={()=>nav("profile")} style={{ width:36, height:36, borderRadius:22, background:t.chip, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, display:"flex", alignItems:"center", justifyContent:"center", border:"none", cursor:"pointer", flexShrink:0 }}><Ic n="left" c={t.text} s={18}/></button>
         <div style={{ fontSize:20, fontWeight:800, color:t.text }}>Help & Support</div>
@@ -2669,9 +2669,10 @@ export default function App() {
             boxShadow: isDevice ? "none"
               : `0 0 0 1px rgba(255,255,255,0.07),0 0 0 11px ${dm?"#020e07":"#0B1F16"},0 0 0 12px rgba(255,255,255,0.05),0 60px 160px rgba(0,0,0,0.72)`,
             flexShrink:0, zIndex:1, transition:"background 0.4s ease",
-            // env() is in real pixels; inside a zoomed box it must be divided
-            // back out or the notch inset shrinks with the scale.
-            paddingTop: isDevice ? `calc(env(safe-area-inset-top) / ${scale})` : 0,
+            // The inset is published as --safe-top and consumed by whichever
+            // element sits at the top of each screen, so backgrounds run all
+            // the way under the Dynamic Island instead of stopping below it.
+            ["--safe-top" as any]: isDevice ? `calc(env(safe-area-inset-top) / ${scale})` : "0px",
           }}>
             <div style={{ position:"absolute", top:-70, left:-60, width:320, height:320, borderRadius:"50%", background:t.orbA, filter:"blur(80px)", pointerEvents:"none" }}/>
             <div style={{ position:"absolute", bottom:-40, right:-70, width:300, height:300, borderRadius:"50%", background:t.orbB, filter:"blur(90px)", pointerEvents:"none" }}/>
