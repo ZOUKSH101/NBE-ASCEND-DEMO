@@ -125,17 +125,36 @@ type Screen = "login"|"signup"|"forgot"|"onboarding"|"goalsetup"|"home"|"invest"
 
 // ─── Viewport ────────────────────────────────────────────────────────────────
 /** True on a real phone-sized screen — the device frame is dropped there. */
-function useIsDevice() {
-  const [isDevice, setIsDevice] = useState(
-    typeof window !== "undefined" && window.matchMedia("(max-width: 560px)").matches
-  )
+/** Width the UI was laid out against. Everything scales relative to this. */
+const DESIGN_WIDTH = 390
+
+const measure = () => {
+  if (typeof window === "undefined") return { isDevice:false, scale:1 }
+  const w = window.innerWidth
+  const isDevice = w <= 560
+  // 320 (SE) → 0.86, 390 (design) → 1, 430 (Pro Max) → 1.10.
+  // Clamped so text never gets unreadably small or cartoonishly large.
+  const scale = isDevice ? Math.min(Math.max(w / DESIGN_WIDTH, 0.84), 1.14) : 1
+  return { isDevice, scale: Math.round(scale * 1000) / 1000 }
+}
+
+function useViewport() {
+  const [vp, setVp] = useState(measure)
   useEffect(()=>{
-    const mq = window.matchMedia("(max-width: 560px)")
-    const on = (e:MediaQueryListEvent) => setIsDevice(e.matches)
-    mq.addEventListener("change", on)
-    return ()=>mq.removeEventListener("change", on)
+    let frame = 0
+    const on = () => {
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(()=>setVp(measure()))
+    }
+    window.addEventListener("resize", on)
+    window.addEventListener("orientationchange", on)
+    return ()=>{
+      cancelAnimationFrame(frame)
+      window.removeEventListener("resize", on)
+      window.removeEventListener("orientationchange", on)
+    }
   }, [])
-  return isDevice
+  return vp
 }
 
 // ─── Progression ─────────────────────────────────────────────────────────────
@@ -2251,7 +2270,7 @@ function BottomNav({ active, onSelect }: { active:Screen; onSelect:(s:Screen)=>v
     { id:"rewards", label:tx("rewards",lang), icon:"award" },
   ]
   return <div id="tut-nav" style={{
-    position:"absolute", bottom:"calc(20px + env(safe-area-inset-bottom))", left:14, right:14, zIndex:30,
+    position:"absolute", bottom:`calc(20px + env(safe-area-inset-bottom) / var(--vp-scale, 1))`, left:14, right:14, zIndex:30,
     display:"flex", alignItems:"center", justifyContent:"space-between",
     padding:"9px 10px", borderRadius:999,
     background:t.navBg, backdropFilter:"blur(30px) saturate(180%)", WebkitBackdropFilter:"blur(30px) saturate(180%)",
@@ -2332,8 +2351,8 @@ const TUTORIALS: Partial<Record<Screen, TutStep[]>> = {
   ],
 }
 
-function TutorialOverlay({ steps, frameRef, onDone }: {
-  steps:TutStep[]; frameRef:React.RefObject<HTMLDivElement|null>; onDone:()=>void
+function TutorialOverlay({ steps, frameRef, onDone, scale=1 }: {
+  steps:TutStep[]; frameRef:React.RefObject<HTMLDivElement|null>; onDone:()=>void; scale?:number
 }) {
   const { t } = useT()
   const [i, setI] = useState(0)
@@ -2348,13 +2367,20 @@ function TutorialOverlay({ steps, frameRef, onDone }: {
       const el = document.getElementById(step.target)
       if (!el) { setRect(null); return }
       const f = frame.getBoundingClientRect(), r = el.getBoundingClientRect()
-      setRect({ top:r.top-f.top, left:r.left-f.left, width:r.width, height:r.height })
+      // getBoundingClientRect reports real pixels; the overlay is a child of
+      // the zoomed frame, so divide back into the frame's own coordinates.
+      setRect({
+        top:  (r.top  - f.top)  / scale,
+        left: (r.left - f.left) / scale,
+        width:  r.width  / scale,
+        height: r.height / scale,
+      })
     }
     const el = step.target ? document.getElementById(step.target) : null
     if (el) el.scrollIntoView({ behavior:"smooth", block:"center" })
     raf = window.setTimeout(measure, el ? 320 : 0)
     return ()=>window.clearTimeout(raf)
-  }, [i, step, frameRef])
+  }, [i, step, frameRef, scale])
 
   const pad = 8
   const spot = rect ? { top:rect.top-pad, left:rect.left-pad, width:rect.width+pad*2, height:rect.height+pad*2 } : null
@@ -2420,7 +2446,7 @@ export default function App() {
   const [homeCardGoalId, setHomeCardGoalId] = useState<string|null>(null)
   const [tourReady, setTourReady] = useState(false)
   const [statusLight, setStatusLight] = useState(false)
-  const isDevice = useIsDevice()
+  const { isDevice, scale } = useViewport()
   const frameRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -2487,6 +2513,16 @@ export default function App() {
       .then(saved => setHoldings(prev => prev.map(x => x.id===local.id ? saved : x)))
       .catch(()=>{ /* queued by the SDK; local entry stands */ })
   }, [uid])
+
+  /* Keep the page background behind the app matching the theme, so the iOS
+     safe areas and any overscroll never flash the default page colour. */
+  useEffect(()=>{
+    document.documentElement.style.setProperty("--app-bg", dm ? "#06180F" : "#EEF9F5")
+  }, [dm])
+
+  useEffect(()=>{
+    document.documentElement.style.setProperty("--vp-scale", String(isDevice ? scale : 1))
+  }, [isDevice, scale])
 
   useEffect(()=>{
     scrollRef.current?.scrollTo({ top:0 })
@@ -2592,15 +2628,20 @@ export default function App() {
 
           <div ref={frameRef} style={{
             position:"relative",
+            // zoom scales layout, not just paint, so every px inside stays
+            // proportional on a 320px SE and a 430px Pro Max alike.
+            zoom: isDevice ? scale : 1,
             width: isDevice ? "100%" : 390,
-            height: isDevice ? "100dvh" : 820,
+            height: isDevice ? `calc(100dvh / ${scale})` : 820,
             maxWidth:"100%",
             borderRadius: isDevice ? 0 : 52,
             overflow:"hidden", display:"flex", flexDirection:"column", background:t.frame,
             boxShadow: isDevice ? "none"
               : `0 0 0 1px rgba(255,255,255,0.07),0 0 0 11px ${dm?"#020e07":"#0B1F16"},0 0 0 12px rgba(255,255,255,0.05),0 60px 160px rgba(0,0,0,0.72)`,
             flexShrink:0, zIndex:1, transition:"background 0.4s ease",
-            paddingTop: isDevice ? "env(safe-area-inset-top)" : 0,
+            // env() is in real pixels; inside a zoomed box it must be divided
+            // back out or the notch inset shrinks with the scale.
+            paddingTop: isDevice ? `calc(env(safe-area-inset-top) / ${scale})` : 0,
           }}>
             <div style={{ position:"absolute", top:-70, left:-60, width:320, height:320, borderRadius:"50%", background:t.orbA, filter:"blur(80px)", pointerEvents:"none" }}/>
             <div style={{ position:"absolute", bottom:-40, right:-70, width:300, height:300, borderRadius:"50%", background:t.orbB, filter:"blur(90px)", pointerEvents:"none" }}/>
@@ -2623,13 +2664,13 @@ export default function App() {
               </div>
             </div>}
 
-            <div ref={scrollRef} style={{ flex:1, overflowY:"auto" as const, position:"relative", zIndex:2, paddingBottom: showNav ? "calc(96px + env(safe-area-inset-bottom))" : 0 }}>
+            <div ref={scrollRef} style={{ flex:1, overflowY:"auto" as const, position:"relative", zIndex:2, paddingBottom: showNav ? `calc(96px + env(safe-area-inset-bottom) / ${isDevice ? scale : 1})` : 0 }}>
               {renderScreen()}
             </div>
 
             {showNav && <BottomNav active={screen} onSelect={setScreen}/>}
             {showTour && tour && tourKey && (
-              <TutorialOverlay steps={tour} frameRef={frameRef} onDone={()=>patch({ [`flags.toursSeen.${tourKey}`]: true, "stats.points": (profile?.stats.points ?? 0) + PTS_TOUR, "stats.level": progression((profile?.stats.points ?? 0) + PTS_TOUR).level })}/>
+              <TutorialOverlay steps={tour} frameRef={frameRef} scale={isDevice ? scale : 1} onDone={()=>patch({ [`flags.toursSeen.${tourKey}`]: true, "stats.points": (profile?.stats.points ?? 0) + PTS_TOUR, "stats.level": progression((profile?.stats.points ?? 0) + PTS_TOUR).level })}/>
             )}
           </div>
         </div>
