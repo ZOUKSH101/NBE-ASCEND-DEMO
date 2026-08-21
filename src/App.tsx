@@ -735,10 +735,14 @@ function HomeScreen({ nav, userGoals, builtinActive, homeCardGoalId, setHomeCard
   const selectedIdx = allDisplayGoals.findIndex(g => g.id === (selectedGoal?.id ?? ""))
   const hasMultiple = allDisplayGoals.length > 1
 
-  const goalPct = selectedGoal?.pct ?? 0
-  const goalSaved = 0
   const goalBudgetNum = selectedGoal ? (parseInt((selectedGoal.budget||"").replace(/\D/g,""))||30000) : 30000
-  const goalRemaining = goalBudgetNum - goalSaved
+  // Money actually committed counts toward a user goal; built-in goals keep
+  // their own step-based percentage.
+  const goalSaved = selectedGoal?.type === "builtin" ? 0 : Math.min(invested, goalBudgetNum)
+  const goalPct = selectedGoal?.type === "builtin"
+    ? (selectedGoal?.pct ?? 0)
+    : goalBudgetNum > 0 ? Math.min(100, Math.round((goalSaved / goalBudgetNum) * 100)) : 0
+  const goalRemaining = Math.max(0, goalBudgetNum - goalSaved)
 
   const calcTimeLeft = () => {
     if (!selectedGoal?.end) return "—"
@@ -817,7 +821,7 @@ function HomeScreen({ nav, userGoals, builtinActive, homeCardGoalId, setHomeCard
               <div style={{ flex:1 }}>
                 <div style={{ fontSize:11, color:"rgba(255,255,255,0.55)", marginBottom:4 }}>Saved so far</div>
                 <div style={{ fontSize:22, fontWeight:800, letterSpacing:-0.5 }}>EGP {goalSaved.toLocaleString()}</div>
-                <div style={{ fontSize:11, color:"rgba(255,255,255,0.55)", marginTop:2 }}>of {selectedGoal!.budget || "EGP " + goalBudgetNum.toLocaleString()} target</div>
+                <div style={{ fontSize:11, color:"rgba(255,255,255,0.55)", marginTop:2 }}>of EGP {goalBudgetNum.toLocaleString()} target</div>
               </div>
             </div>
             <div style={{ marginBottom:14 }}>
@@ -825,8 +829,8 @@ function HomeScreen({ nav, userGoals, builtinActive, homeCardGoalId, setHomeCard
                 <div style={{ width:`${goalPct}%`, height:6, background:`linear-gradient(90deg,${GD},${GDS})`, borderRadius:6, transition:"width 0.6s ease" }}/>
               </div>
               <div style={{ display:"flex", justifyContent:"space-between", marginTop:4 }}>
-                <span style={{ fontSize:10, color:"rgba(255,255,255,0.45)" }}>EGP 0 saved</span>
-                <span style={{ fontSize:10, color:"rgba(255,255,255,0.45)" }}>{selectedGoal!.budget || "EGP " + goalBudgetNum.toLocaleString()} goal</span>
+                <span style={{ fontSize:10, color:"rgba(255,255,255,0.45)" }}>EGP {goalSaved.toLocaleString()} saved</span>
+                <span style={{ fontSize:10, color:"rgba(255,255,255,0.45)" }}>EGP {goalBudgetNum.toLocaleString()} goal</span>
               </div>
             </div>
             <div style={{ display:"flex", borderTop:"1px solid rgba(255,255,255,0.12)", paddingTop:14, gap:12 }}>
@@ -1139,8 +1143,23 @@ const FUND_DETAILS = [
   },
 ]
 
+/** Where a holding stands today: elapsed term, value accrued, what is due. */
+function holdingProgress(h:HoldingDoc) {
+  const start = new Date(h.purchasedAt).getTime()
+  const now   = Date.now()
+  const end   = h.maturesAt ? new Date(h.maturesAt).getTime() : 0
+  const years = end ? (end - start) / 31_557_600_000 : 1
+  const elapsedYears = Math.max(0, (now - start) / 31_557_600_000)
+  const pct = end ? Math.min(100, Math.max(0, Math.round(((now - start) / (end - start)) * 100))) : null
+  const totalProfit = Math.round(h.amount * (h.rate / 100) * (years || 1))
+  const accrued = Math.round(h.amount * (h.rate / 100) * Math.min(elapsedYears, years || elapsedYears))
+  const daysLeft = end ? Math.max(0, Math.ceil((end - now) / 86_400_000)) : null
+  return { pct, totalProfit, accrued, daysLeft, atMaturity: h.amount + totalProfit, years }
+}
+
 function InvestScreen() {
   const { t } = useT()
+  const { holdings } = useApp()
   const [productType, setProductType] = useState<"certs"|"funds">("certs")
   const [amount, setAmount] = useState(10000)
   const [selected, setSelected] = useState(0)
@@ -1158,6 +1177,9 @@ function InvestScreen() {
     { name:"Balanced Growth Fund",     dur:"2+ Yr Horizon", rate:24, min:2000, color:GR,  tag:"MOST POPULAR", risk:"Medium" },
     { name:"Equity Opportunities Fund",dur:"3+ Yr Horizon", rate:30, min:3000, color:GD,  tag:"BIGGEST SWINGS", risk:"High" },
   ]
+  const owned = holdings.filter(h => h.kind === (productType==="funds" ? "fund" : "certificate"))
+  const ownedTotal = owned.reduce((n,h)=>n+h.amount, 0)
+  const ownedProjected = owned.reduce((n,h)=>n + holdingProgress(h).atMaturity, 0)
   const isFund = productType==="funds"
   const products = isFund ? funds : certs
   const details  = isFund ? FUND_DETAILS : CERT_DETAILS
@@ -1276,16 +1298,76 @@ function InvestScreen() {
         ))}
       </div>
 
-      <button id="tut-invest-explainer" onClick={()=>setExplainer(true)} style={{ width:"100%", ...glass, borderRadius:20, padding:"14px 16px", display:"flex", alignItems:"center", gap:12, cursor:"pointer", marginBottom:16, textAlign:"left" as const, fontFamily:"inherit" }}>
+      {!owned.length && <button id="tut-invest-explainer" onClick={()=>setExplainer(true)} style={{ width:"100%", ...glass, borderRadius:20, padding:"14px 16px", display:"flex", alignItems:"center", gap:12, cursor:"pointer", marginBottom:16, textAlign:"left" as const, fontFamily:"inherit" }}>
         <div style={{ width:38, height:38, borderRadius:19, background:t.cardAlt, border:`1px solid ${t.stroke}`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}><Ic n="help" c={t.brand} s={18}/></div>
         <div style={{ flex:1 }}>
           <div style={{ fontSize:13, fontWeight:800, color:t.text }}>Not sure which is which?</div>
           <div style={{ fontSize:11.5, color:t.sub, marginTop:2 }}>Certificates vs funds, explained in plain words</div>
         </div>
         <Ic n="right" c={t.sub} s={16}/>
-      </button>
+      </button>}
 
-      <div style={{ ...glass, borderRadius:22, padding:"18px", marginBottom:16 }} key={productType+"-how"}>
+      {owned.length > 0 && <div style={{ ...glass, borderRadius:22, padding:"18px", marginBottom:16 }} key={productType+"-track"}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:4 }}>
+          <div style={{ fontSize:14, fontWeight:800, color:t.text }}>
+            Your {isFund ? "funds" : "certificates"}
+          </div>
+          <button onClick={()=>setExplainer(true)} style={{ fontSize:11.5, color:t.sub, fontWeight:600, background:"none", border:"none", cursor:"pointer", fontFamily:"inherit", textDecoration:"underline" }}>
+            Remind me how these work
+          </button>
+        </div>
+        <div style={{ fontSize:12, color:t.sub, marginBottom:16 }}>
+          EGP {ownedTotal.toLocaleString()} across {owned.length} {owned.length===1?"holding":"holdings"}
+          {isFund ? " · value moves daily" : ` · EGP ${ownedProjected.toLocaleString()} at maturity`}
+        </div>
+
+        {owned.map(h=>{
+          const pr = holdingProgress(h)
+          return <div key={h.id} style={{ background:t.cardAlt, border:`1px solid ${t.stroke}`, borderRadius:18, padding:"15px 16px", marginBottom:10 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:10, marginBottom:12 }}>
+              <div style={{ minWidth:0 }}>
+                <div style={{ fontSize:13.5, fontWeight:700, color:t.text }}>{h.productName}</div>
+                <div style={{ fontSize:11.5, color:t.sub, marginTop:2 }}>
+                  Bought {h.purchasedAt} · {isFund ? `~${h.rate}% avg` : `${h.rate}% fixed`}
+                </div>
+              </div>
+              <div style={{ textAlign:"right" as const, flexShrink:0 }}>
+                <div style={{ fontSize:15, fontWeight:800, color:t.text }}>EGP {h.amount.toLocaleString()}</div>
+                <div style={{ fontSize:10, color:t.sub, marginTop:2 }}>invested</div>
+              </div>
+            </div>
+
+            {pr.pct !== null && <div style={{ marginBottom:12 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", fontSize:10.5, color:t.sub, marginBottom:5 }}>
+                <span>{pr.pct}% through the term</span>
+                <span>{pr.daysLeft === 0 ? "Matured" : `${pr.daysLeft} days left`}</span>
+              </div>
+              <Bar pct={pr.pct} color={cert.color} h={5}/>
+            </div>}
+
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(2, minmax(0,1fr))", gap:9 }}>
+              <div style={{ background:t.chip, border:`1px solid ${t.stroke}`, borderRadius:14, padding:"10px 12px" }}>
+                <div style={{ fontSize:10, color:t.sub }}>{isFund ? "Estimated gain so far" : "Interest earned so far"}</div>
+                <div style={{ fontSize:15, fontWeight:800, color:t.brand, marginTop:3 }}>+EGP {pr.accrued.toLocaleString()}</div>
+              </div>
+              <div style={{ background:t.chip, border:`1px solid ${t.stroke}`, borderRadius:14, padding:"10px 12px" }}>
+                <div style={{ fontSize:10, color:t.sub }}>{isFund ? "If the average holds (1 yr)" : "Value at maturity"}</div>
+                <div style={{ fontSize:15, fontWeight:800, color:t.gold, marginTop:3 }}>EGP {pr.atMaturity.toLocaleString()}</div>
+              </div>
+            </div>
+
+            <div style={{ fontSize:11, color:t.sub, marginTop:11, lineHeight:1.6 }}>
+              {isFund
+                ? "Funds have no maturity date and no fixed rate — these figures are an estimate from the historical average, and the real value moves every day."
+                : h.maturesAt
+                  ? `Pays out on ${h.maturesAt}. Locked for the first six months from purchase.`
+                  : "No maturity date recorded."}
+            </div>
+          </div>
+        })}
+      </div>}
+
+      {!owned.length && <div style={{ ...glass, borderRadius:22, padding:"18px", marginBottom:16 }} key={productType+"-how"}>
         <div style={{ display:"flex", alignItems:"center", gap:9, marginBottom:12 }}>
           <div style={{ width:32, height:32, borderRadius:11, background:isFund?`${GD}22`:`${GR}22`, border:`1px solid ${isFund?GD:GR}38`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
             <Ic n={isFund?"trending":"shield"} c={isFund?t.gold:t.brand} s={16}/>
@@ -1320,7 +1402,7 @@ function InvestScreen() {
         {isFund && <div style={{ marginTop:14, padding:"12px 14px", borderRadius:16, background:`${GD}14`, border:`1px solid ${GD}30`, fontSize:12, color:t.sub, lineHeight:1.7 }}>
           The percentage on each fund below is an <b style={{ color:t.text }}>average of what already happened</b>, not a rate you are being offered. A certificate&rsquo;s percentage is a promise; a fund&rsquo;s is a track record.
         </div>}
-      </div>
+      </div>}
 
       <div style={{ fontSize:14, fontWeight:700, color:t.text, marginBottom:10 }}>{isFund?"Choose a Fund":"Choose a Certificate"}</div>
       <div style={{ display:"flex", gap:9, marginBottom:14 }}>

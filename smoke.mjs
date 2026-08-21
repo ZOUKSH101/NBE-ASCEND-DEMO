@@ -168,6 +168,19 @@ check("subscription completes", /Subscription added/i.test(text()))
 const done = btnLike("Done")
 if (done) { await click(done); await act(async()=>{await new Promise(r=>setTimeout(r,400))}) }
 
+// ── 7b. Invest becomes a tracker once you own that type ────────────────────
+const investTab2 = [...document.querySelectorAll("button")].find(b => (b.textContent||"").trim() === "Invest")
+if (investTab2) { await click(investTab2); await act(async()=>{await new Promise(r=>setTimeout(r,450))}) }
+const fundsTab2 = btnLike("Mutual Funds")
+if (fundsTab2) { await click(fundsTab2); await act(async()=>{await new Promise(r=>setTimeout(r,450))}) }
+check("owned type shows a tracker, not the primer", /Your funds/i.test(text()), text().slice(0,60))
+check("primer is hidden once you own that type", !/How a mutual fund works/i.test(text()))
+check("tracker shows gain and projection", /gain so far|average holds/i.test(text()))
+check("how-it-works still reachable on demand", /Remind me how these work/i.test(text()))
+const certTab2 = btnLike("Certificates")
+if (certTab2) { await click(certTab2); await act(async()=>{await new Promise(r=>setTimeout(r,450))}) }
+check("unowned type still shows its primer", /How a certificate works/i.test(text()))
+
 // ── 8. settings ─────────────────────────────────────────────────────────────
 const homeTab = [...document.querySelectorAll("button")].find(b => (b.textContent||"").trim() === "Home")
 if (homeTab) { await click(homeTab); await act(async()=>{await new Promise(r=>setTimeout(r,400))}) }
