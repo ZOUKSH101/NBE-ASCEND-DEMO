@@ -467,6 +467,30 @@ function ForgotScreen({ nav, resetPassword }: { nav:(s:Screen)=>void; resetPassw
   </div>
 }
 
+function DemoGate({ demoSignIn }: { demoSignIn:(name:string)=>unknown }) {
+  const { t } = useT()
+  const [name, setName] = useState("")
+  return <div style={{ minHeight:"100%", background:"transparent", display:"flex", flexDirection:"column" }}>
+    <AuthHero title="NBE Youth — Demo" sub="A preview build, not the real app"/>
+    <div style={{ flex:1, padding:"28px 24px 24px", display:"flex", flexDirection:"column", gap:16 }}>
+      <div style={{ background:t.cardAlt, border:`1px solid ${GD}35`, borderRadius:20, padding:"16px 18px", display:"flex", gap:12, alignItems:"flex-start" }}>
+        <Ic n="info" c={t.gold} s={18}/>
+        <div style={{ fontSize:12.5, color:t.text, lineHeight:1.7 }}>
+          This build has no bank connection and no accounts. Nothing you enter is sent anywhere — it is stored only in this browser and disappears when you clear it. Do not enter real banking details.
+        </div>
+      </div>
+      <div>
+        <div style={{ fontSize:12, fontWeight:700, color:t.sub, marginBottom:8 }}>What should we call you?</div>
+        <AuthInput icon="user" placeholder="Your name" value={name} onChange={setName}/>
+      </div>
+      <GreenBtn label="Explore the demo" onClick={()=>demoSignIn(name)}/>
+      <div style={{ fontSize:11, color:t.sub, lineHeight:1.6, textAlign:"center" as const, marginTop:4 }}>
+        Sign-in is disabled in the demo build.
+      </div>
+    </div>
+  </div>
+}
+
 // ─── Onboarding ───────────────────────────────────────────────────────────────
 function IllustTarget() {
   return <svg viewBox="0 0 300 240" width="300" height="240">
@@ -2434,7 +2458,7 @@ function Splash({ dark }: { dark:boolean }) {
 }
 
 export default function App() {
-  const { user, ready, signIn, signUp, resetPassword, logOut, isDemo } = useAuth()
+  const { user, ready, signIn, signUp, resetPassword, logOut, demoSignIn, isDemo } = useAuth()
 
   const [authScreen, setAuthScreen] = useState<Screen>("login")
   const [screen, setScreen] = useState<Screen>("home")
@@ -2517,8 +2541,8 @@ export default function App() {
   /* Keep the page background behind the app matching the theme, so the iOS
      safe areas and any overscroll never flash the default page colour. */
   useEffect(()=>{
-    document.documentElement.style.setProperty("--app-bg", dm ? "#06180F" : "#EEF9F5")
-  }, [dm])
+    document.documentElement.style.setProperty("--app-bg", t.frame)
+  }, [t.frame])
 
   useEffect(()=>{
     document.documentElement.style.setProperty("--vp-scale", String(isDevice ? scale : 1))
@@ -2563,6 +2587,9 @@ export default function App() {
 
   const renderScreen = () => {
     if (!user) {
+      // No Firebase config → no credentials to check, so never show a login
+      // form that would accept any password.
+      if (isDemo) return <DemoGate demoSignIn={demoSignIn}/>
       if (authScreen === "signup") return <SignUpScreen nav={setAuthScreen} signUp={signUp}/>
       if (authScreen === "forgot") return <ForgotScreen nav={setAuthScreen} resetPassword={resetPassword}/>
       return <LoginScreen nav={setAuthScreen} signIn={signIn}/>
@@ -2635,7 +2662,10 @@ export default function App() {
             height: isDevice ? `calc(100dvh / ${scale})` : 820,
             maxWidth:"100%",
             borderRadius: isDevice ? 0 : 52,
-            overflow:"hidden", display:"flex", flexDirection:"column", background:t.frame,
+            overflow:"hidden", display:"flex", flexDirection:"column",
+            // On a device the page background already paints the gradient; a
+            // second one here would seam against it in the safe areas.
+            background: isDevice ? "transparent" : t.frame,
             boxShadow: isDevice ? "none"
               : `0 0 0 1px rgba(255,255,255,0.07),0 0 0 11px ${dm?"#020e07":"#0B1F16"},0 0 0 12px rgba(255,255,255,0.05),0 60px 160px rgba(0,0,0,0.72)`,
             flexShrink:0, zIndex:1, transition:"background 0.4s ease",

@@ -15,6 +15,19 @@ body {
   overscroll-behavior: none;
 }
 
+/* Grid and flex children default to min-width:auto, so an input whose
+   intrinsic width exceeds its track blows the track out and overlaps its
+   neighbour. iOS date inputs are the usual culprit. */
+input, select, textarea, button {
+  min-width: 0;
+  max-width: 100%;
+  font-family: inherit;
+}
+input[type="date"] {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
 *::-webkit-scrollbar { display: none; }
 * { scrollbar-width: none; box-sizing: border-box; }
 
