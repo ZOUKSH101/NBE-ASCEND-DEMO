@@ -123,6 +123,21 @@ const tx = (key:string, lang:"en"|"ar") => TR[key]?.[lang] ?? key
 
 type Screen = "login"|"signup"|"forgot"|"onboarding"|"goalsetup"|"home"|"invest"|"learn"|"lesson"|"goals"|"rewards"|"dailyreview"|"notifications"|"profile"|"settings"|"security"|"help"
 
+// ─── Viewport ────────────────────────────────────────────────────────────────
+/** True on a real phone-sized screen — the device frame is dropped there. */
+function useIsDevice() {
+  const [isDevice, setIsDevice] = useState(
+    typeof window !== "undefined" && window.matchMedia("(max-width: 560px)").matches
+  )
+  useEffect(()=>{
+    const mq = window.matchMedia("(max-width: 560px)")
+    const on = (e:MediaQueryListEvent) => setIsDevice(e.matches)
+    mq.addEventListener("change", on)
+    return ()=>mq.removeEventListener("change", on)
+  }, [])
+  return isDevice
+}
+
 // ─── Progression ─────────────────────────────────────────────────────────────
 const LEVEL_NAMES = ["Beginner", "Saver", "Rising Investor", "Confident Investor", "Strategist"]
 const PTS_PER_LEVEL = 1000
@@ -2236,7 +2251,7 @@ function BottomNav({ active, onSelect }: { active:Screen; onSelect:(s:Screen)=>v
     { id:"rewards", label:tx("rewards",lang), icon:"award" },
   ]
   return <div id="tut-nav" style={{
-    position:"absolute", bottom:20, left:14, right:14, zIndex:30,
+    position:"absolute", bottom:"calc(20px + env(safe-area-inset-bottom))", left:14, right:14, zIndex:30,
     display:"flex", alignItems:"center", justifyContent:"space-between",
     padding:"9px 10px", borderRadius:999,
     background:t.navBg, backdropFilter:"blur(30px) saturate(180%)", WebkitBackdropFilter:"blur(30px) saturate(180%)",
@@ -2405,6 +2420,7 @@ export default function App() {
   const [homeCardGoalId, setHomeCardGoalId] = useState<string|null>(null)
   const [tourReady, setTourReady] = useState(false)
   const [statusLight, setStatusLight] = useState(false)
+  const isDevice = useIsDevice()
   const frameRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -2562,24 +2578,34 @@ export default function App() {
     <ThCtx.Provider value={themeValue}>
       <AppCtx.Provider value={{ uid, profile, patch, holdings, buy, logOut, isDemo }}>
         <div style={{
-          minHeight:"100vh", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:18,
-          background: dm ? "linear-gradient(135deg,#02100A,#053024 42%,#07301C 72%,#141F0F)"
-                         : "linear-gradient(135deg,#0A3B2A,#0E5F42 40%,#3F7F5E 72%,#8FA36A)",
-          padding:24, position:"relative", overflow:"hidden", transition:"background 0.4s ease",
+          minHeight:"100dvh", display:"flex", flexDirection:"column", alignItems:"center",
+          justifyContent: isDevice ? "flex-start" : "center", gap: isDevice ? 0 : 18,
+          background: isDevice ? t.frame
+                     : dm ? "linear-gradient(135deg,#02100A,#053024 42%,#07301C 72%,#141F0F)"
+                          : "linear-gradient(135deg,#0A3B2A,#0E5F42 40%,#3F7F5E 72%,#8FA36A)",
+          padding: isDevice ? 0 : 24, position:"relative", overflow:"hidden", transition:"background 0.4s ease",
         }}>
-          <div style={{ position:"fixed", top:"10%", left:"5%", width:500, height:500, background:`${GR}18`, borderRadius:"50%", filter:"blur(140px)", pointerEvents:"none" }}/>
-          <div style={{ position:"fixed", bottom:"5%", right:"5%", width:400, height:400, background:`${GD}15`, borderRadius:"50%", filter:"blur(120px)", pointerEvents:"none" }}/>
+          {!isDevice && <>
+            <div style={{ position:"fixed", top:"10%", left:"5%", width:500, height:500, background:`${GR}18`, borderRadius:"50%", filter:"blur(140px)", pointerEvents:"none" }}/>
+            <div style={{ position:"fixed", bottom:"5%", right:"5%", width:400, height:400, background:`${GD}15`, borderRadius:"50%", filter:"blur(120px)", pointerEvents:"none" }}/>
+          </>}
 
           <div ref={frameRef} style={{
-            position:"relative", width:390, height:820, maxWidth:"100%", borderRadius:52, overflow:"hidden",
-            display:"flex", flexDirection:"column", background:t.frame,
-            boxShadow:`0 0 0 1px rgba(255,255,255,0.07),0 0 0 11px ${dm?"#020e07":"#0B1F16"},0 0 0 12px rgba(255,255,255,0.05),0 60px 160px rgba(0,0,0,0.72)`,
+            position:"relative",
+            width: isDevice ? "100%" : 390,
+            height: isDevice ? "100dvh" : 820,
+            maxWidth:"100%",
+            borderRadius: isDevice ? 0 : 52,
+            overflow:"hidden", display:"flex", flexDirection:"column", background:t.frame,
+            boxShadow: isDevice ? "none"
+              : `0 0 0 1px rgba(255,255,255,0.07),0 0 0 11px ${dm?"#020e07":"#0B1F16"},0 0 0 12px rgba(255,255,255,0.05),0 60px 160px rgba(0,0,0,0.72)`,
             flexShrink:0, zIndex:1, transition:"background 0.4s ease",
+            paddingTop: isDevice ? "env(safe-area-inset-top)" : 0,
           }}>
             <div style={{ position:"absolute", top:-70, left:-60, width:320, height:320, borderRadius:"50%", background:t.orbA, filter:"blur(80px)", pointerEvents:"none" }}/>
             <div style={{ position:"absolute", bottom:-40, right:-70, width:300, height:300, borderRadius:"50%", background:t.orbB, filter:"blur(90px)", pointerEvents:"none" }}/>
 
-            <div style={{ height:44, display:"flex", alignItems:"center", justifyContent:"space-between", padding:"0 28px", flexShrink:0, position:"relative", zIndex:5 }}>
+            {!isDevice && <div style={{ height:44, display:"flex", alignItems:"center", justifyContent:"space-between", padding:"0 28px", flexShrink:0, position:"relative", zIndex:5 }}>
               <span style={{ fontSize:14, fontWeight:700, color:statusColor }}>9:41</span>
               <div style={{ position:"absolute", top:8, left:"50%", transform:"translateX(-50%)", width:120, height:28, background:"#080808", borderRadius:14 }}/>
               <div style={{ display:"flex", gap:5, alignItems:"center" }}>
@@ -2595,9 +2621,9 @@ export default function App() {
                   <rect x="1.5" y="2.5" width="17" height="7" rx="1.5" fill={statusColor}/>
                 </svg>
               </div>
-            </div>
+            </div>}
 
-            <div ref={scrollRef} style={{ flex:1, overflowY:"auto" as const, position:"relative", zIndex:2, paddingBottom:showNav?96:0 }}>
+            <div ref={scrollRef} style={{ flex:1, overflowY:"auto" as const, position:"relative", zIndex:2, paddingBottom: showNav ? "calc(96px + env(safe-area-inset-bottom))" : 0 }}>
               {renderScreen()}
             </div>
 
