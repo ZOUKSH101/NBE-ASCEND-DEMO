@@ -106,6 +106,7 @@ export const DEFAULT_PROFILE = (displayName:string, email:string): UserProfile =
 
 const LS = {
   profile: (uid:string) => `nbe:${uid}:profile`,
+  mirror:  (uid:string) => `nbe:${uid}:mirror`,
   goals:   (uid:string) => `nbe:${uid}:goals`,
   holds:   (uid:string) => `nbe:${uid}:holdings`,
 }
@@ -118,16 +119,29 @@ const writeLS = (k:string, v:unknown) => {
 
 /* ─── Profile ──────────────────────────────────────────────────────────── */
 
+/**
+ * Last profile Firestore gave us. A transient read failure must not look like
+ * a brand-new user, or the app sends them back through onboarding.
+ */
+export const readMirror = (uid:string): UserProfile | null =>
+  readLS<UserProfile|null>(LS.mirror(uid), null)
+
+const writeMirror = (uid:string, p:UserProfile) => writeLS(LS.mirror(uid), p)
+
 export async function loadProfile(uid:string): Promise<UserProfile | null> {
   if (!firebaseConfigured || !db) return readLS<UserProfile|null>(LS.profile(uid), null)
   const snap = await getDoc(doc(db, "users", uid))
-  return snap.exists() ? (snap.data() as UserProfile) : null
+  if (!snap.exists()) return null
+  const p = snap.data() as UserProfile
+  writeMirror(uid, p)
+  return p
 }
 
 export async function createProfile(uid:string, displayName:string, email:string): Promise<UserProfile> {
   const profile = DEFAULT_PROFILE(displayName, email)
   if (!firebaseConfigured || !db) { writeLS(LS.profile(uid), profile); return profile }
   await setDoc(doc(db, "users", uid), { ...profile, createdAt: serverTimestamp() })
+  writeMirror(uid, profile)
   return profile
 }
 
@@ -157,6 +171,11 @@ export async function patchProfile(uid:string, patch:Record<string,unknown>): Pr
     node[parts[parts.length - 1]] = value
   }
   await setDoc(doc(db, "users", uid), nested, { merge: true })
+}
+
+/** Keep the local mirror in step with an optimistic in-memory update. */
+export function mirrorProfile(uid:string, profile:UserProfile) {
+  if (firebaseConfigured) writeMirror(uid, profile)
 }
 
 export const setTourSeen  = (uid:string, key:TourKey) => patchProfile(uid, { [`flags.toursSeen.${key}`]: true })

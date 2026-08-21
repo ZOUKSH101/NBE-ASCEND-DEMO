@@ -5,7 +5,7 @@ import { useAuth, friendlyAuthError, type SessionUser } from "./lib/useAuth"
 import { firebaseConfigured } from "./lib/firebase"
 import {
   loadProfile, createProfile, patchProfile, loadGoals, addGoal,
-  loadHoldings, addHolding, describeHoldings, DEFAULT_PROFILE,
+  loadHoldings, addHolding, describeHoldings, DEFAULT_PROFILE, readMirror, mirrorProfile,
   type UserProfile, type GoalDoc, type HoldingDoc, type TourKey,
 } from "./lib/db"
 import logoImg from "./imports/ChatGPT_Image_Aug_20__2026__12_06_04_PM.png"
@@ -635,7 +635,7 @@ function GoalSetupSheet({ onGoalSet }: { onGoalSet:(entry:GoalEntry)=>void }) {
       <div style={{ display:"flex", gap:8, flexWrap:"wrap" as const, marginBottom:18 }}>
         <div style={{ fontSize:11, fontWeight:600, color:t.sub, alignSelf:"center", marginRight:2 }}>Quick pick:</div>
         {chips.map(chip=>(
-          <button key={chip} onClick={()=>setName(chip)} style={{ padding:"8px 18px", borderRadius:999, border:`1.5px solid ${name===chip?GR:`${GD}80`}`, background:name===chip?`${GR}14`:`${GD}10`, color:name===chip?GR:GRD, fontSize:13, fontWeight:700, cursor:"pointer", transition:"all 0.2s" }}>{chip}</button>
+          <button key={chip} onClick={()=>setName(chip)} style={{ padding:"8px 18px", borderRadius:999, border:`1.5px solid ${name===chip?t.brand:`${GD}80`}`, background:name===chip?`${GR}22`:`${GD}18`, color:name===chip?t.brand:t.gold, fontSize:13, fontWeight:700, cursor:"pointer", transition:"all 0.2s" }}>{chip}</button>
         ))}
       </div>
 
@@ -659,18 +659,56 @@ function GoalSetupSheet({ onGoalSet }: { onGoalSet:(entry:GoalEntry)=>void }) {
 }
 
 // ─── Built-in Goals (defined here so HomeScreen can reference them) ───────────
-interface BuiltinGoal { title:string; icon:string; color:string; pct:number; steps:{label:string;done:boolean}[]; defaultActive:boolean }
+/* Built-in goals evaluate their own steps against the account rather than
+   carrying a fixed percentage, so the ring always reflects real progress. */
+interface GoalCtx {
+  profile: UserProfile | null
+  holdings: HoldingDoc[]
+  goalCount: number
+}
+interface BuiltinStep { label:string; check:(c:GoalCtx)=>boolean }
+interface BuiltinGoal { title:string; icon:string; color:string; steps:BuiltinStep[]; defaultActive:boolean }
+
+const invested   = (c:GoalCtx) => c.holdings.reduce((n,h)=>n+h.amount, 0)
+const points     = (c:GoalCtx) => c.profile?.stats.points ?? 0
+const toursDone  = (c:GoalCtx) => Object.values(c.profile?.flags.toursSeen ?? {}).filter(Boolean).length
+const hasKind    = (c:GoalCtx, k:"certificate"|"fund") => c.holdings.some(h=>h.kind===k)
 
 const BUILTIN_GOALS: BuiltinGoal[] = [
-  { title:"Make My First Investment", icon:"trending", color:GR, pct:75, defaultActive:true,
-    steps:[{label:"Complete 3 financial lessons",done:true},{label:"Maintain EGP 5,000 in account",done:true},{label:"Learn about certificates",done:true},{label:"Invest your first EGP 1,000",done:false}] },
-  { title:"Become Credit Card Ready", icon:"credit", color:GD, pct:40, defaultActive:true,
-    steps:[{label:"Complete financial education track",done:true},{label:"Build consistent saving habit",done:true},{label:"Make a responsible investment",done:false},{label:"Maintain account balance for 3 months",done:false},{label:"Pass the credit card readiness quiz",done:false}] },
-  { title:"Become Loan-Ready", icon:"bank", color:GRD, pct:0, defaultActive:false,
-    steps:[{label:"Complete financial education track",done:true},{label:"Build a consistent saving habit",done:true},{label:"Maintain credit card for 6 months",done:false},{label:"Keep debt-to-income ratio below 30%",done:false},{label:"Reach loan eligibility requirements",done:false}] },
-  { title:"Build Emergency Fund", icon:"shield", color:GR, pct:0, defaultActive:false,
-    steps:[{label:"Complete required financial lessons",done:true},{label:"Set a monthly savings target",done:true},{label:"Save EGP 5,000",done:false},{label:"Save EGP 15,000 (3 months expenses)",done:false}] },
+  { title:"Make My First Investment", icon:"trending", color:GR, defaultActive:true, steps:[
+    { label:"Set your first savings goal",                check:c=>!!c.profile?.flags.firstGoalSet },
+    { label:"Read how certificates and funds work",       check:c=>!!c.profile?.flags.toursSeen.invest },
+    { label:"Earn your first 100 points",                 check:c=>points(c) >= 100 },
+    { label:"Invest your first EGP 1,000",                check:c=>c.holdings.some(h=>h.amount >= 1000) },
+  ]},
+  { title:"Become Credit Card Ready", icon:"credit", color:GD, defaultActive:true, steps:[
+    { label:"Set a savings goal",                         check:c=>!!c.profile?.flags.firstGoalSet },
+    { label:"Finish three app walkthroughs",              check:c=>toursDone(c) >= 3 },
+    { label:"Make your first investment",                 check:c=>c.holdings.length > 0 },
+    { label:"Hold EGP 10,000 invested",                   check:c=>invested(c) >= 10000 },
+    { label:"Reach 500 points",                           check:c=>points(c) >= 500 },
+  ]},
+  { title:"Become Loan-Ready", icon:"bank", color:GRD, defaultActive:false, steps:[
+    { label:"Hold at least one certificate",              check:c=>hasKind(c,"certificate") },
+    { label:"Spread across a certificate and a fund",     check:c=>hasKind(c,"certificate") && hasKind(c,"fund") },
+    { label:"Hold EGP 25,000 invested",                   check:c=>invested(c) >= 25000 },
+    { label:"Keep three or more active holdings",         check:c=>c.holdings.filter(h=>h.status==="active").length >= 3 },
+    { label:"Reach 1,000 points",                         check:c=>points(c) >= 1000 },
+  ]},
+  { title:"Build Emergency Fund", icon:"shield", color:GR, defaultActive:false, steps:[
+    { label:"Set a savings goal",                         check:c=>c.goalCount > 0 },
+    { label:"Put money into an accessible fund",          check:c=>hasKind(c,"fund") },
+    { label:"Save EGP 5,000",                             check:c=>invested(c) >= 5000 },
+    { label:"Save EGP 15,000 (about 3 months of costs)",  check:c=>invested(c) >= 15000 },
+  ]},
 ]
+
+/** Resolve a built-in goal's steps and percentage against the current account. */
+function evalBuiltin(g:BuiltinGoal, ctx:GoalCtx) {
+  const steps = g.steps.map(st => ({ label:st.label, done:st.check(ctx) }))
+  const done = steps.filter(st=>st.done).length
+  return { ...g, steps, done, pct: Math.round((done / steps.length) * 100) }
+}
 
 // ─── HomeScreen ───────────────────────────────────────────────────────────────
 function HomeScreen({ nav, userGoals, builtinActive, homeCardGoalId, setHomeCardGoalId, onStartNewGoal }: {
@@ -687,7 +725,10 @@ function HomeScreen({ nav, userGoals, builtinActive, homeCardGoalId, setHomeCard
   const prog = progression(stats.points)
   const invested = holdings.reduce((n,h)=>n+h.amount, 0)
 
-  const builtinGoalEntries: GoalEntry[] = BUILTIN_GOALS.map((g,i) => ({ id:`builtin-${i}`, name:g.title, budget:"", start:"", end:"", type:"builtin" as const, pct:g.pct })).filter((_,i) => builtinActive[i])
+  const goalCtx: GoalCtx = { profile, holdings, goalCount: userGoals.length }
+  const builtinGoalEntries: GoalEntry[] = BUILTIN_GOALS
+    .map((g,i) => ({ id:`builtin-${i}`, name:g.title, budget:"", start:"", end:"", type:"builtin" as const, pct:evalBuiltin(g, goalCtx).pct }))
+    .filter((_,i) => builtinActive[i])
   const allDisplayGoals: GoalEntry[] = [...userGoals, ...builtinGoalEntries]
 
   const selectedGoal = allDisplayGoals.find(g => g.id === homeCardGoalId) ?? allDisplayGoals[0] ?? null
@@ -823,19 +864,45 @@ function HomeScreen({ nav, userGoals, builtinActive, homeCardGoalId, setHomeCard
     </div>
 
     {/* Stat pills */}
-    <div style={{ display:"flex", gap:8, padding:"12px 16px 0", overflowX:"auto" as const }}>
+    <div style={{ display:"grid", gridTemplateColumns:"repeat(2, minmax(0, 1fr))", gap:8, padding:"12px 16px 0" }}>
       {([
         {icon:"refresh",val:`${stats.streakDays} ${stats.streakDays===1?"day":"days"}`,label:"Streak",color:"#F97316"},
         {icon:"award",val:`${stats.points.toLocaleString()} pts`,label:"Points",color:GD},
         {icon:"trending",val:`Level ${prog.level}`,label:prog.name,color:t.brand},
         {icon:"wallet",val:`EGP ${invested.toLocaleString()}`,label:holdings.length===1?"Invested":`Invested · ${holdings.length}`,color:t.brand},
       ]).map(st=>(
-        <div key={st.label} style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, border:`1px solid ${t.stroke}`, borderRadius:16, padding:"10px 14px", flexShrink:0, boxShadow:`0 1px 4px rgba(0,0,0,${t.dm?0.2:0.06})`, display:"flex", gap:8, alignItems:"center" }}>
+        <div key={st.label} style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, border:`1px solid ${t.stroke}`, borderRadius:16, padding:"10px 12px", minWidth:0, boxShadow:`0 1px 4px rgba(0,0,0,${t.dm?0.2:0.06})`, display:"flex", gap:8, alignItems:"center" }}>
           <Ic n={st.icon} c={st.color} s={15}/>
-          <div><div style={{ fontSize:13, fontWeight:700, color:t.text }}>{st.val}</div><div style={{ fontSize:10, color:t.sub }}>{st.label}</div></div>
+          <div style={{ minWidth:0 }}><div style={{ fontSize:13, fontWeight:700, color:t.text, whiteSpace:"nowrap" as const, overflow:"hidden", textOverflow:"ellipsis" }}>{st.val}</div><div style={{ fontSize:10, color:t.sub, whiteSpace:"nowrap" as const, overflow:"hidden", textOverflow:"ellipsis" }}>{st.label}</div></div>
         </div>
       ))}
     </div>
+
+    {/* Your investments */}
+    {holdings.length > 0 && <div style={{ padding:"18px 16px 0" }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
+        <span style={{ fontSize:15, fontWeight:700, color:t.text }}>Your Investments</span>
+        <button onClick={()=>nav("invest")} style={{ fontSize:12.5, color:t.brand, fontWeight:700, background:"none", border:"none", cursor:"pointer", fontFamily:"inherit" }}>Add more →</button>
+      </div>
+      {holdings.map(h=>(
+        <div key={h.id} style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, border:`1px solid ${t.stroke}`, borderRadius:18, padding:"14px 16px", marginBottom:9, display:"flex", alignItems:"center", gap:13 }}>
+          <div style={{ width:40, height:40, borderRadius:20, background:h.kind==="fund"?`${GD}22`:`${GR}22`, border:`1px solid ${h.kind==="fund"?GD:GR}38`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+            <Ic n={h.kind==="fund"?"trending":"shield"} c={h.kind==="fund"?t.gold:t.brand} s={18}/>
+          </div>
+          <div style={{ flex:1, minWidth:0 }}>
+            <div style={{ fontSize:13.5, fontWeight:700, color:t.text, whiteSpace:"nowrap" as const, overflow:"hidden", textOverflow:"ellipsis" }}>{h.productName}</div>
+            <div style={{ fontSize:11.5, color:t.sub, marginTop:2 }}>
+              {h.kind==="fund" ? `~${h.rate}% avg` : `${h.rate}% fixed`} · {h.term}
+              {h.maturesAt ? ` · matures ${h.maturesAt}` : ""}
+            </div>
+          </div>
+          <div style={{ textAlign:"right" as const, flexShrink:0 }}>
+            <div style={{ fontSize:14, fontWeight:800, color:t.text }}>EGP {h.amount.toLocaleString()}</div>
+            <div style={{ fontSize:10, color:t.sub, marginTop:2 }}>{h.status}</div>
+          </div>
+        </div>
+      ))}
+    </div>}
 
     {/* Quick actions */}
     <div id="tut-home-actions" style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:10, margin:"14px 16px 0" }}>
@@ -1564,10 +1631,13 @@ function GoalsScreen({ userGoals, setUserGoals, builtinActive, setBuiltinActive,
   const [detailIdx, setDetailIdx] = useState(0)
   const [editingId, setEditingId] = useState<string>("")
   const track = t.dm?"#1E3D2C":"#E5E7EB"
+  const { profile, holdings } = useApp()
+  const goalCtx: GoalCtx = { profile, holdings, goalCount: userGoals.length }
+  const BUILTINS = BUILTIN_GOALS.map(g => evalBuiltin(g, goalCtx))
 
   const getAllDisplayGoals = (uGoals:GoalEntry[], bActive:boolean[]): GoalEntry[] => [
     ...uGoals,
-    ...BUILTIN_GOALS.filter((_,i)=>bActive[i]).map((g,_i,_arr)=>({ id:`builtin-${BUILTIN_GOALS.indexOf(g)}`, name:g.title, budget:"", start:"", end:"", type:"builtin" as const, pct:g.pct }))
+    ...BUILTINS.filter((_,i)=>bActive[i]).map(g=>({ id:`builtin-${BUILTINS.indexOf(g)}`, name:g.title, budget:"", start:"", end:"", type:"builtin" as const, pct:g.pct }))
   ]
 
   const activateBuiltin = (i:number) => {
@@ -1595,7 +1665,7 @@ function GoalsScreen({ userGoals, setUserGoals, builtinActive, setBuiltinActive,
 
   // ── Goal detail view (built-in) ──
   if (view==="goalDetail") {
-    const ag = BUILTIN_GOALS[detailIdx]
+    const ag = BUILTINS[detailIdx]
     const isActive = builtinActive[detailIdx]
     const donePct = Math.round(ag.steps.filter(s=>s.done).length/ag.steps.length*100)
     return <div style={{ background:"transparent", minHeight:"100%" }}>
@@ -1694,7 +1764,7 @@ function GoalsScreen({ userGoals, setUserGoals, builtinActive, setBuiltinActive,
       <div id="tut-goals-list"/>
       {activeBuiltins.length > 0 && <>
         <div style={{ fontSize:11, fontWeight:800, color:t.sub, letterSpacing:1.2, textTransform:"uppercase" as const, marginBottom:14 }}>Active Goals</div>
-        {BUILTIN_GOALS.map((g,i)=>!builtinActive[i]?null:(
+        {BUILTINS.map((g,i)=>!builtinActive[i]?null:(
           <div key={i} style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, border:`1px solid ${t.stroke}`, borderRadius:22, padding:"18px", marginBottom:16, boxShadow:`0 2px 12px rgba(0,0,0,${t.dm?0.22:0.07})` }}>
             <div style={{ display:"flex", gap:14, alignItems:"center", marginBottom:16 }}>
               <div style={{ position:"relative", flexShrink:0 }}>
@@ -1767,7 +1837,7 @@ function GoalsScreen({ userGoals, setUserGoals, builtinActive, setBuiltinActive,
       {/* Inactive built-in goals */}
       {inactiveBuiltins.length > 0 && <>
         <div style={{ fontSize:11, fontWeight:800, color:t.sub, letterSpacing:1.2, textTransform:"uppercase" as const, marginBottom:14 }}>Available Goals</div>
-        {BUILTIN_GOALS.map((g,i)=>builtinActive[i]?null:(
+        {BUILTINS.map((g,i)=>builtinActive[i]?null:(
           <div key={i} style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, border:`1px solid ${t.stroke}`, borderRadius:18, padding:"14px 16px", marginBottom:10, display:"flex", alignItems:"center", gap:14, boxShadow:`0 1px 5px rgba(0,0,0,${t.dm?0.18:0.05})` }}>
             <div style={{ width:46, height:46, borderRadius:13, background:`${g.color}${t.dm?"22":"14"}`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}><Ic n={g.icon} c={g.color} s={22}/></div>
             <div style={{ flex:1 }}>
@@ -2503,7 +2573,13 @@ export default function App() {
           })
           .catch(()=>{ /* lists stay empty until the next load */ })
       } catch {
-        if (!cancelled) { setProfile(DEFAULT_PROFILE(user.displayName, user.email)); setScreen("onboarding") }
+        // A failed read is not a new user. Fall back to the last profile we
+        // saw; only a genuinely unknown account starts onboarding.
+        if (cancelled) return
+        const cached = readMirror(user.uid)
+        const p = cached ?? DEFAULT_PROFILE(user.displayName, user.email)
+        setProfile(p)
+        setScreen(p.flags.onboardingComplete ? "home" : "onboarding")
       } finally {
         if (!cancelled) setProfileReady(true)
       }
@@ -2522,6 +2598,7 @@ export default function App() {
         for (const seg of parts.slice(0,-1)) node = node[seg] ??= {}
         node[parts[parts.length-1]] = value
       }
+      if (uid) mirrorProfile(uid, next as UserProfile)
       return next as UserProfile
     })
     if (uid) patchProfile(uid, p).catch(()=>{ /* offline: local state still applied */ })

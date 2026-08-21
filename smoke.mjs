@@ -12,6 +12,8 @@ globalThis.HTMLElement = window.HTMLElement
 globalThis.Element = window.Element
 globalThis.Node = window.Node
 globalThis.getComputedStyle = window.getComputedStyle
+globalThis.localStorage = window.localStorage
+globalThis.sessionStorage = window.sessionStorage
 globalThis.requestAnimationFrame = window.requestAnimationFrame
 globalThis.cancelAnimationFrame = window.cancelAnimationFrame
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
@@ -171,6 +173,26 @@ const homeTab = [...document.querySelectorAll("button")].find(b => (b.textConten
 if (homeTab) { await click(homeTab); await act(async()=>{await new Promise(r=>setTimeout(r,400))}) }
 const avatar = [...document.querySelectorAll("div")].find(d => (d.textContent||"").trim() === "ZF")
 check("avatar shows the user's initials", !!avatar)
+
+console.log("\n--- localStorage before remount ---")
+for (let i=0;i<window.localStorage.length;i++){
+  const k = window.localStorage.key(i)
+  console.log(" ", k, "=", (window.localStorage.getItem(k)||"").slice(0,110))
+}
+console.log("---\n")
+
+// ── 8b. PERSISTENCE: remount as if the user reopened the app ───────────────
+await act(async () => { root.unmount() })
+const root2 = createRoot(document.getElementById("root"))
+await act(async () => { root2.render(React.createElement(App)) })
+await act(async () => { await new Promise(r => setTimeout(r, 900)) })
+check("session survives a reload (no gate)", !text().includes("Explore the demo"), text().slice(0,50))
+check("onboarding does NOT repeat", !/Your Goals Await|Ready to reach/i.test(text()), text().slice(0,60))
+check("goal sheet does NOT repeat", !/first goal you want to reach/i.test(text()), text().slice(0,60))
+check("lands straight on Home", /Good (morning|afternoon|evening)/i.test(text()), text().slice(0,60))
+check("tutorial does NOT repeat on Home", !/This is your home screen/i.test(text()))
+check("saved goal still present", /New Laptop/.test(text()), text().slice(0,80))
+check("holding still present after reload", /pts|EGP/.test(text()))
 
 // ── 9. no React errors across the whole walk ────────────────────────────────
 const real = errors.filter(e => !/not wrapped in act|useLayoutEffect|Warning: ReactDOM/i.test(e))
