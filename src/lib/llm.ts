@@ -3,7 +3,7 @@ export interface ChatTurn { role:ChatRole; content:string }
 
 const env = import.meta.env
 const API_KEY = (env.VITE_GEMINI_API_KEY ?? "").trim()
-const MODEL   = (env.VITE_GEMINI_MODEL ?? "gemini-2.5-flash").trim()
+const MODEL   = (env.VITE_GEMINI_MODEL ?? "gemini-3.6-flash").trim()
 const PROXY   = (env.VITE_LLM_PROXY_URL ?? "").trim()
 const MAX_TOKENS  = Number(env.VITE_LLM_MAX_TOKENS ?? 500)
 const TEMPERATURE = Number(env.VITE_LLM_TEMPERATURE ?? 0.4)
