@@ -175,6 +175,40 @@ function useViewport() {
   return vp
 }
 
+/**
+ * 100dvh is the browser's guess at the visible height: it lags the collapsing
+ * address bar on scroll and ignores the keyboard entirely, so the frame — and
+ * the nav pinned to its bottom — drifted a few pixels at a time. visualViewport
+ * reports the real visible box. Published as CSS vars and returned as the
+ * keyboard overlap so the nav can get out of the way.
+ */
+function useVisualViewport() {
+  const [kbInset, setKbInset] = useState(0)
+  useEffect(()=>{
+    const vv = window.visualViewport
+    if (!vv) return
+    let frame = 0
+    const on = () => {
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(()=>{
+        const overlap = Math.max(0, Math.round(window.innerHeight - (vv.height + vv.offsetTop)))
+        document.documentElement.style.setProperty("--vvh", `${Math.round(vv.height)}px`)
+        document.documentElement.style.setProperty("--kb-inset", `${overlap}px`)
+        setKbInset(overlap)
+      })
+    }
+    on()
+    vv.addEventListener("resize", on)
+    vv.addEventListener("scroll", on)
+    return ()=>{
+      cancelAnimationFrame(frame)
+      vv.removeEventListener("resize", on)
+      vv.removeEventListener("scroll", on)
+    }
+  }, [])
+  return kbInset
+}
+
 // ─── Progression ─────────────────────────────────────────────────────────────
 const LEVEL_NAMES = ["Beginner", "Saver", "Rising Investor", "Confident Investor", "Strategist"]
 const PTS_PER_LEVEL = 1000
@@ -2777,6 +2811,7 @@ export default function App() {
   const [tourReady, setTourReady] = useState(false)
   const [statusLight, setStatusLight] = useState(false)
   const { isDevice, scale, frameHeight } = useViewport()
+  const kbInset = useVisualViewport()
   const frameRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -2901,7 +2936,9 @@ export default function App() {
   }
 
   const NO_NAV: Screen[] = ["login","signup","forgot","onboarding","goalsetup","notifications","lesson","profile","settings","security","help"]
-  const showNav = !!user && !NO_NAV.includes(screen)
+  // >100px of overlap is a keyboard, not an address bar. The pill would
+  // otherwise be shoved up the screen on top of the field being typed into.
+  const showNav = !!user && !NO_NAV.includes(screen) && kbInset < 100
   const isAuthScreen = !user
 
   const tourKey = (["home","invest","learn","goals","rewards"] as const).includes(screen as any) ? screen as TourKey : null
@@ -2982,7 +3019,7 @@ export default function App() {
             // proportional on a 320px SE and a 430px Pro Max alike.
             zoom: isDevice ? scale : 1,
             width: isDevice ? "100%" : 390,
-            height: isDevice ? `calc(100dvh / ${scale})` : frameHeight,
+            height: isDevice ? `calc(var(--vvh, 100dvh) / ${scale})` : frameHeight,
             // Landscape hands the app the full long side; capping it keeps the
             // 390px column proportions instead of stretching them edge to edge.
             maxWidth: isDevice ? 560 : "100%",
