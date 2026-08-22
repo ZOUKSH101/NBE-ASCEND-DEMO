@@ -18,6 +18,12 @@ body {
 /* Grid and flex children default to min-width:auto, so an input whose
    intrinsic width exceeds its track blows the track out and overlaps its
    neighbour. iOS date inputs are the usual culprit. */
+/* A pasted 200-character word must wrap rather than widen the whole layout. */
+#root, #root * {
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
 input, select, textarea, button {
   min-width: 0;
   max-width: 100%;

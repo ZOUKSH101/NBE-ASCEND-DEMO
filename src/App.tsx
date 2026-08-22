@@ -123,6 +123,10 @@ const tx = (key:string, lang:"en"|"ar") => TR[key]?.[lang] ?? key
 
 type Screen = "login"|"signup"|"forgot"|"onboarding"|"goalsetup"|"home"|"invest"|"learn"|"lesson"|"goals"|"rewards"|"dailyreview"|"notifications"|"profile"|"settings"|"security"|"help"
 
+let localSeq = 0
+/** Date.now() alone collides for records created in the same millisecond. */
+const newLocalId = () => `l${Date.now().toString(36)}${(localSeq++).toString(36)}${Math.random().toString(36).slice(2,6)}`
+
 // ─── Viewport ────────────────────────────────────────────────────────────────
 /** True on a real phone-sized screen — the device frame is dropped there. */
 /** Width the UI was laid out against. Everything scales relative to this. */
@@ -601,7 +605,7 @@ function GoalSetupSheet({ onGoalSet }: { onGoalSet:(entry:GoalEntry)=>void }) {
   const chips = ["Laptop", "Car", "Investing"]
   const confirm = () => {
     if (!name.trim()) return
-    onGoalSet({ id: Date.now().toString(), name:name.trim(), budget, start, end, type:"user" })
+    onGoalSet({ id: newLocalId(), name:name.trim(), budget, start, end, type:"user" })
   }
   const inp = (val:string, set:(v:string)=>void, placeholder:string, label:string, type="text") => (
     <div style={{ marginBottom:14 }}>
@@ -640,7 +644,7 @@ function GoalSetupSheet({ onGoalSet }: { onGoalSet:(entry:GoalEntry)=>void }) {
       </div>
 
       {inp(budget, setBudget, "e.g. EGP 30,000", "BUDGET (TARGET AMOUNT)")}
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:14 }}>
+      <div style={{ display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:10, marginBottom:14 }}>
         <div>
           <div style={{ fontSize:11, fontWeight:700, color:t.sub, marginBottom:6, letterSpacing:0.3 }}>START DATE</div>
           <input type="date" value={start} onChange={e=>setStart(e.target.value)} style={{ width:"100%", border:`1.5px solid ${start?GR:t.stroke}`, borderRadius:999, padding:"12px 14px", fontSize:13, outline:"none", fontFamily:"inherit", color:t.text, boxSizing:"border-box" as const, transition:"border-color 0.2s", background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur }}/>
@@ -670,19 +674,19 @@ interface BuiltinStep { label:string; check:(c:GoalCtx)=>boolean }
 interface BuiltinGoal { title:string; icon:string; color:string; steps:BuiltinStep[]; defaultActive:boolean }
 
 const invested   = (c:GoalCtx) => c.holdings.reduce((n,h)=>n+h.amount, 0)
-const points     = (c:GoalCtx) => c.profile?.stats.points ?? 0
-const toursDone  = (c:GoalCtx) => Object.values(c.profile?.flags.toursSeen ?? {}).filter(Boolean).length
+const points     = (c:GoalCtx) => c.profile?.stats?.points ?? 0
+const toursDone  = (c:GoalCtx) => Object.values(c.profile?.flags?.toursSeen ?? {}).filter(Boolean).length
 const hasKind    = (c:GoalCtx, k:"certificate"|"fund") => c.holdings.some(h=>h.kind===k)
 
 const BUILTIN_GOALS: BuiltinGoal[] = [
   { title:"Make My First Investment", icon:"trending", color:GR, defaultActive:true, steps:[
-    { label:"Set your first savings goal",                check:c=>!!c.profile?.flags.firstGoalSet },
-    { label:"Read how certificates and funds work",       check:c=>!!c.profile?.flags.toursSeen.invest },
+    { label:"Set your first savings goal",                check:c=>!!c.profile?.flags?.firstGoalSet },
+    { label:"Read how certificates and funds work",       check:c=>!!c.profile?.flags?.toursSeen?.invest },
     { label:"Earn your first 100 points",                 check:c=>points(c) >= 100 },
     { label:"Invest your first EGP 1,000",                check:c=>c.holdings.some(h=>h.amount >= 1000) },
   ]},
   { title:"Become Credit Card Ready", icon:"credit", color:GD, defaultActive:true, steps:[
-    { label:"Set a savings goal",                         check:c=>!!c.profile?.flags.firstGoalSet },
+    { label:"Set a savings goal",                         check:c=>!!c.profile?.flags?.firstGoalSet },
     { label:"Finish three app walkthroughs",              check:c=>toursDone(c) >= 3 },
     { label:"Make your first investment",                 check:c=>c.holdings.length > 0 },
     { label:"Hold EGP 10,000 invested",                   check:c=>invested(c) >= 10000 },
@@ -777,7 +781,7 @@ function HomeScreen({ nav, userGoals, builtinActive, homeCardGoalId, setHomeCard
 
     <div style={{ padding:"14px 20px 0" }}>
       <div style={{ fontSize:13, color:t.sub }}>{tx("gmorn",lang)}</div>
-      <div style={{ fontSize:20, fontWeight:800, color:t.text, marginTop:2 }}>{profile?.displayName ?? "there"}</div>
+      <div style={{ fontSize:20, fontWeight:800, color:t.text, marginTop:2, whiteSpace:"nowrap" as const, overflow:"hidden", textOverflow:"ellipsis" }}>{profile?.displayName ?? "there"}</div>
     </div>
 
     {/* Goal card */}
@@ -909,7 +913,7 @@ function HomeScreen({ nav, userGoals, builtinActive, homeCardGoalId, setHomeCard
     </div>}
 
     {/* Quick actions */}
-    <div id="tut-home-actions" style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:10, margin:"14px 16px 0" }}>
+    <div id="tut-home-actions" style={{ display:"grid", gridTemplateColumns:"repeat(3, minmax(0,1fr))", gap:10, margin:"14px 16px 0" }}>
       {([{icon:"chart",label:tx("invest",lang),screen:"invest"as Screen,color:GR},{icon:"target",label:tx("goals",lang),screen:"goals"as Screen,color:t.brand},{icon:"list",label:"Daily Review",screen:"dailyreview"as Screen,color:t.brand}]).map(a=>(
         <button key={a.label} onClick={()=>nav(a.screen)} style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, border:"none", borderRadius:999, padding:"13px 6px", display:"flex", flexDirection:"column", alignItems:"center", gap:7, cursor:"pointer", boxShadow:`0 2px 8px rgba(0,0,0,${t.dm?0.2:0.06})` }}>
           <div style={{ width:42, height:42, borderRadius:12, background:`${a.color}${t.dm?"22":"14"}`, display:"flex", alignItems:"center", justifyContent:"center" }}><Ic n={a.icon} c={a.color} s={20}/></div>
@@ -942,7 +946,7 @@ function HomeScreen({ nav, userGoals, builtinActive, homeCardGoalId, setHomeCard
                 <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center" }}><Ic n={icon} c={color} s={18}/></div>
               </div>
               <div style={{ flex:1 }}>
-                <div style={{ fontSize:14, fontWeight:700, color:t.text, marginBottom:3 }}>{g.name}</div>
+                <div style={{ fontSize:14, fontWeight:700, color:t.text, marginBottom:3, whiteSpace:"nowrap" as const, overflow:"hidden", textOverflow:"ellipsis" }}>{g.name}</div>
                 <div style={{ fontSize:12, color:t.sub, marginBottom:7 }}>{g.budget ? `Target: ${g.budget}` : g.type==="builtin" ? `${pct}% complete` : "No budget set"}</div>
                 <Bar pct={pct} color={color} h={4} trackColor={t.track}/>
               </div>
@@ -970,19 +974,28 @@ function SubscribeSheet({ product, isFund, onClose }: {
   const [step, setStep] = useState<"amount"|"review"|"done">("amount")
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string|null>(null)
+  const submitting = useRef(false)
 
-  const remaining = profile?.limits.remaining ?? 0
-  const value = Number(amount.replace(/[^\d]/g, "")) || 0
-  const profit = Math.round(value * product.rate / 100)
+  const remaining = profile?.limits?.remaining ?? 0
+  const raw = amount.trim()
+  // Digits only. Stripping non-digits silently turned "-5000" into 5000.
+  const wellFormed = /^\d+$/.test(raw)
+  const value = wellFormed ? Number(raw) : NaN
+  const profit = Number.isFinite(value) ? Math.round(value * product.rate / 100) : 0
 
   const validate = () => {
+    if (!wellFormed || !Number.isFinite(value)) return "Enter the amount in whole Egyptian pounds, digits only."
     if (value < product.min) return `Minimum for ${product.name} is EGP ${product.min.toLocaleString()}.`
     if (value > remaining)   return `That is over your remaining limit of EGP ${remaining.toLocaleString()}. Invest the remainder now, or schedule the balance next cycle.`
     return null
   }
 
   const confirm = async () => {
-    if (busy) return
+    // A ref, not state: three clicks in one tick all read the same stale state.
+    if (submitting.current) return
+    const problem = validate()
+    if (problem) { setErr(problem); setStep("amount"); return }
+    submitting.current = true
     setBusy(true); setErr(null)
     try {
       const today = new Date()
@@ -1002,12 +1015,13 @@ function SubscribeSheet({ product, isFund, onClose }: {
         "limits.remaining": Math.max(0, remaining - value),
         "flags.hasSubscribed": true,
         "flags.funnelStage": "first_subscription",
-        "stats.points": (profile?.stats.points ?? 0) + PTS_INVEST,
-        "stats.level": progression((profile?.stats.points ?? 0) + PTS_INVEST).level,
+        "stats.points": (profile?.stats?.points ?? 0) + PTS_INVEST,
+        "stats.level": progression((profile?.stats?.points ?? 0) + PTS_INVEST).level,
       })
       setStep("done")
     } catch {
       setErr("Could not complete the subscription. Check your connection and try again.")
+      submitting.current = false
     } finally { setBusy(false) }
   }
 
@@ -1067,7 +1081,7 @@ function SubscribeSheet({ product, isFund, onClose }: {
           [isFund?"Average return":"Interest rate", `${product.rate}% per year`],
           [isFund?"Suggested horizon":"Duration", product.dur],
           [isFund?"Estimated first-year gain":"Profit at maturity", `EGP ${profit.toLocaleString()}`],
-          ["Limit after this", `EGP ${Math.max(0, remaining-value).toLocaleString()}`],
+          ["Limit after this", `EGP ${Math.max(0, remaining - (Number.isFinite(value) ? value : 0)).toLocaleString()}`],
         ].map(([k,v],i,a)=>(
           <div key={k} style={{ display:"flex", justifyContent:"space-between", gap:12, padding:"11px 0", borderBottom:i<a.length-1?`1px solid ${t.border}`:"none" }}>
             <span style={{ fontSize:12.5, color:t.sub }}>{k}</span>
@@ -1098,7 +1112,7 @@ function SubscribeSheet({ product, isFund, onClose }: {
         </div>
         <div style={{ fontSize:19, fontWeight:800, color:t.text, marginBottom:8 }}>Subscription added</div>
         <div style={{ fontSize:13, color:t.sub, lineHeight:1.7, marginBottom:22 }}>
-          EGP {value.toLocaleString()} in {product.name}. It now appears in your holdings, and Acsend can see it when you ask for advice.
+          EGP {(Number.isFinite(value) ? value : 0).toLocaleString()} in {product.name}. It now appears in your holdings, and Acsend can see it when you ask for advice.
         </div>
         <button onClick={onClose} style={{ width:"100%", padding:"15px", borderRadius:999, border:"none", background:`linear-gradient(135deg,${GR},${GRD})`, color:"white", fontSize:14.5, fontWeight:700, cursor:"pointer", boxShadow:`0 8px 22px ${GR}45`, fontFamily:"inherit" }}>Done</button>
       </div>}
@@ -1326,7 +1340,7 @@ function InvestScreen() {
           return <div key={h.id} style={{ background:t.cardAlt, border:`1px solid ${t.stroke}`, borderRadius:18, padding:"15px 16px", marginBottom:10 }}>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:10, marginBottom:12 }}>
               <div style={{ minWidth:0 }}>
-                <div style={{ fontSize:13.5, fontWeight:700, color:t.text }}>{h.productName}</div>
+                <div style={{ fontSize:13.5, fontWeight:700, color:t.text, whiteSpace:"nowrap" as const, overflow:"hidden", textOverflow:"ellipsis" }}>{h.productName}</div>
                 <div style={{ fontSize:11.5, color:t.sub, marginTop:2 }}>
                   Bought {h.purchasedAt} · {isFund ? `~${h.rate}% avg` : `${h.rate}% fixed`}
                 </div>
@@ -1447,7 +1461,7 @@ function InvestScreen() {
           <input type="range" min={1000} max={100000} step={1000} value={amount} onChange={e=>setAmount(Number(e.target.value))} style={{ width:"100%", accentColor:GR, cursor:"pointer" }}/>
           <div style={{ display:"flex", justifyContent:"space-between", fontSize:10, color:t.sub, marginTop:5 }}><span>EGP 1,000</span><span>EGP 100,000</span></div>
         </div>
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+        <div style={{ display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:10 }}>
           <div style={{ background:t.cardAlt, border:`1px solid ${t.stroke}`, borderRadius:16, padding:"15px" }}>
             <div style={{ fontSize:10, color:t.sub }}>{isFund?"Estimated Profit":"Your Profit"}</div>
             <div style={{ fontSize:21, fontWeight:800, color:t.brand, marginTop:6 }}>+EGP {profit.toLocaleString()}</div>
@@ -1515,10 +1529,10 @@ function LearnScreen() {
     try {
       // System prompt goes in its own field; only the conversation turns are sent as messages.
       const system = buildSystemPrompt({
-        funnel_stage: profile?.flags.funnelStage ?? "curious",
+        funnel_stage: profile?.flags?.funnelStage ?? "curious",
         holdings: describeHoldings(holdings),
         limit_remaining: profile ? `EGP ${profile.limits.remaining.toLocaleString()}` : "",
-        reset_date: profile?.limits.resetDate ?? "",
+        reset_date: profile?.limits?.resetDate ?? "",
       })
       const turns = history
         .filter((m,i)=>!(i===0 && m.role==="assistant"))   // drop the canned greeting
@@ -1767,7 +1781,7 @@ function GoalsScreen({ userGoals, setUserGoals, builtinActive, setBuiltinActive,
           </div>
         </div>
         <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, border:`1px solid ${t.stroke}`, borderRadius:20, padding:"16px", marginBottom:14, boxShadow:`0 1px 6px rgba(0,0,0,${t.dm?0.2:0.06})` }}>
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+          <div style={{ display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:12 }}>
             {[{label:"Goal Type",val:"Built-in",icon:"tag"},{label:"Status",val:isActive?"Active":"Inactive",icon:"refresh"}].map((item,i)=>(
               <div key={i} style={{ background:t.chip, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, border:`1px solid ${t.stroke}`, borderRadius:12, padding:"12px" }}>
                 <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:6 }}><Ic n={item.icon} c={t.sub} s={13}/><span style={{ fontSize:10, color:t.sub }}>{item.label}</span></div>
@@ -1805,7 +1819,7 @@ function GoalsScreen({ userGoals, setUserGoals, builtinActive, setBuiltinActive,
       saveLabel="Create Goal"
       onCancel={()=>setView("list")}
       onSave={vals=>{
-        const newGoal:GoalEntry = { id: Date.now().toString(), ...vals, type:"user" }
+        const newGoal:GoalEntry = { id: newLocalId(), ...vals, type:"user" }
         setUserGoals(p=>[...p, newGoal])
         if (!homeCardGoalId) setHomeCardGoalId(newGoal.id)
         setView("list")
@@ -1883,7 +1897,7 @@ function GoalsScreen({ userGoals, setUserGoals, builtinActive, setBuiltinActive,
               <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:12 }}>
                 <div style={{ width:44, height:44, borderRadius:13, background:`${GR}14`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}><Ic n="target" c={t.brand} s={22}/></div>
                 <div style={{ flex:1 }}>
-                  <div style={{ fontSize:15, fontWeight:700, color:t.text }}>{g.name}</div>
+                  <div style={{ fontSize:15, fontWeight:700, color:t.text, whiteSpace:"nowrap" as const, overflow:"hidden", textOverflow:"ellipsis" }}>{g.name}</div>
                   <div style={{ fontSize:12, color:t.sub, marginTop:2 }}>Budget: {g.budget||"—"}</div>
                 </div>
                 <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:6 }}>
@@ -1894,7 +1908,7 @@ function GoalsScreen({ userGoals, setUserGoals, builtinActive, setBuiltinActive,
                   </div>
                 </div>
               </div>
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:12 }}>
+              <div style={{ display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:8, marginBottom:12 }}>
                 <div style={{ background:t.chip, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, border:`1px solid ${t.stroke}`, borderRadius:10, padding:"8px 10px" }}>
                   <div style={{ fontSize:10, color:t.sub }}>Start Date</div>
                   <div style={{ fontSize:12, fontWeight:600, color:t.text, marginTop:2 }}>{g.start||"—"}</div>
@@ -1952,7 +1966,7 @@ function RewardsScreen() {
     : [{label:"No activity yet — set a goal or make your first investment", pts:"", icon:"info"}]
   const invested = holdings.reduce((n,h)=>n+h.amount, 0)
   const badges=[
-    {name:"First Goal",       icon:"target",   earned: !!profile?.flags.firstGoalSet},
+    {name:"First Goal",       icon:"target",   earned: !!profile?.flags?.firstGoalSet},
     {name:"First Investment", icon:"trending", earned: holdings.length > 0},
     {name:"Saver Pro",        icon:"wallet",   earned: invested >= 25000},
     {name:"Diversified",      icon:"shield",   earned: holdings.some(h=>h.kind==="certificate") && holdings.some(h=>h.kind==="fund")},
@@ -2018,7 +2032,7 @@ function RewardsScreen() {
 
       {/* Partner Rewards */}
       <div style={{ fontSize:11, fontWeight:800, color:t.sub, letterSpacing:1.2, textTransform:"uppercase" as const, marginBottom:12 }}>Partner Rewards</div>
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:18 }}>
+      <div style={{ display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:10, marginBottom:18 }}>
         {partners.map((p,i)=><div key={i} style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, border:`1px solid ${t.stroke}`, borderRadius:18, padding:"14px", boxShadow:`0 1px 5px rgba(0,0,0,${t.dm?0.18:0.05})` }}>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:8 }}>
             <div style={{ width:36, height:36, borderRadius:10, background:t.dm?`${GR}20`:GRL, display:"flex", alignItems:"center", justifyContent:"center" }}><Ic n={p.icon} c={t.brand} s={18}/></div>
@@ -2031,7 +2045,7 @@ function RewardsScreen() {
 
       {/* Achievements (secondary) */}
       <div style={{ fontSize:11, fontWeight:800, color:t.sub, letterSpacing:1.2, textTransform:"uppercase" as const, marginBottom:12 }}>Achievement Badges</div>
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:10, marginBottom:18 }}>
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(4, minmax(0,1fr))", gap:10, marginBottom:18 }}>
         {badges.map((b,i)=><div key={i} style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, border:`1px solid ${t.stroke}`, borderRadius:18, padding:"12px 8px", display:"flex", flexDirection:"column", alignItems:"center", gap:6, boxShadow:`0 1px 4px rgba(0,0,0,${t.dm?0.18:0.05})`, opacity:b.earned?1:0.42 }}>
           <div style={{ width:38, height:38, borderRadius:19, background:b.earned?`${GD}22`:t.bg, display:"flex", alignItems:"center", justifyContent:"center" }}><Ic n={b.icon} c={b.earned?GD:t.sub} s={18}/></div>
           <div style={{ fontSize:9, fontWeight:600, color:t.text, textAlign:"center" as const, lineHeight:1.3 }}>{b.name}</div>
@@ -2084,7 +2098,7 @@ function DailyReviewScreen({ nav }: { nav:(s:Screen)=>void }) {
     <div style={{ padding:"14px 16px 28px" }}>
       {/* Today's Activity summary */}
       <div style={{ fontSize:11, fontWeight:800, color:t.sub, letterSpacing:1.2, textTransform:"uppercase" as const, marginBottom:12 }}>{"Today's Activity"}</div>
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10, marginBottom:18 }}>
+      <div style={{ display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)", gap:10, marginBottom:18 }}>
         {[
           { label:"Spent today",    val:`EGP ${totalSpent}`,                    icon:"credit",   color:ERR  },
           { label:"Invested today", val:`EGP ${investedToday.toLocaleString()}`, icon:"shield",   color:GR   },
@@ -2256,7 +2270,7 @@ function ProfileScreen({ nav }: { nav:(s:Screen)=>void }) {
         <div style={{ fontSize:13, color:t.sub, marginTop:2, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" as const }}>{profile?.email}</div>
         <div style={{ display:"inline-flex", alignItems:"center", gap:5, marginTop:7, background:`${GD}18`, border:`1px solid ${GD}30`, padding:"4px 10px", borderRadius:999 }}>
           <Ic n="award" c={t.gold} s={13}/>
-          <span style={{ fontSize:11, fontWeight:700, color:t.gold }}>{(profile?.stats.points ?? 0).toLocaleString()} pts · Level {profile?.stats.level ?? 1}</span>
+          <span style={{ fontSize:11, fontWeight:700, color:t.gold }}>{(profile?.stats?.points ?? 0).toLocaleString()} pts · Level {profile?.stats?.level ?? 1}</span>
         </div>
       </div>
     </div>
@@ -2265,7 +2279,7 @@ function ProfileScreen({ nav }: { nav:(s:Screen)=>void }) {
       <SSection label="Your money">
         <SRow icon="wallet" iconColor={GR} label="Total invested" sub={`Across ${holdings.length} ${holdings.length===1?"holding":"holdings"}`} right={<span style={{ fontSize:14, fontWeight:800, color:t.text }}>EGP {invested.toLocaleString()}</span>}/>
         <Divider/>
-        <SRow icon="chart" iconColor={GD} label="Remaining limit" sub={`Resets ${profile?.limits.resetDate ?? "—"}`} right={<span style={{ fontSize:14, fontWeight:800, color:t.gold }}>EGP {(profile?.limits.remaining ?? 0).toLocaleString()}</span>}/>
+        <SRow icon="chart" iconColor={GD} label="Remaining limit" sub={`Resets ${profile?.limits?.resetDate ?? "—"}`} right={<span style={{ fontSize:14, fontWeight:800, color:t.gold }}>EGP {(profile?.limits?.remaining ?? 0).toLocaleString()}</span>}/>
       </SSection>
 
       <SSection label="Preferences">
@@ -2661,8 +2675,8 @@ export default function App() {
   const scrollRef = useRef<HTMLDivElement>(null)
 
   const uid = user?.uid ?? ""
-  const dm = profile?.prefs.darkMode ?? true
-  const lang = profile?.prefs.language ?? "en"
+  const dm = profile?.prefs?.darkMode ?? true
+  const lang = profile?.prefs?.language ?? "en"
   const t = dm ? darkTheme : lightTheme
 
   /* Load (or create) the profile, goals and holdings once a session exists. */
@@ -2724,7 +2738,7 @@ export default function App() {
      hangs the UI whenever the backend is unreachable — write behind instead. */
   const buy = useCallback(async (h:Omit<HoldingDoc,"id">) => {
     if (!uid) return
-    const local: HoldingDoc = { ...h, id:`local-${Date.now()}` }
+    const local: HoldingDoc = { ...h, id:newLocalId() }
     setHoldings(prev => [local, ...prev])
     addHolding(uid, h)
       .then(saved => setHoldings(prev => prev.map(x => x.id===local.id ? saved : x)))
@@ -2755,8 +2769,8 @@ export default function App() {
       "flags.firstGoalSet": true,
       "flags.onboardingComplete": true,
       "flags.funnelStage": "understands",
-      "stats.points": (profile?.stats.points ?? 0) + PTS_GOAL,
-      "stats.level": progression((profile?.stats.points ?? 0) + PTS_GOAL).level,
+      "stats.points": (profile?.stats?.points ?? 0) + PTS_GOAL,
+      "stats.level": progression((profile?.stats?.points ?? 0) + PTS_GOAL).level,
     })
     if (uid) {
       addGoal(uid, { name:entry.name, budget:entry.budget, start:entry.start, end:entry.end, type:entry.type, pct:entry.pct ?? 0 })
@@ -2776,7 +2790,7 @@ export default function App() {
 
   const tourKey = (["home","invest","learn","goals","rewards"] as const).includes(screen as any) ? screen as TourKey : null
   const tour = tourKey ? TUTORIALS[tourKey] : undefined
-  const showTour = !!tour && showNav && !!profile && !profile.flags.toursSeen[tourKey!] && tourReady
+  const showTour = !!tour && showNav && !!profile && !profile.flags?.toursSeen?.[tourKey!] && tourReady
 
   const renderScreen = () => {
     if (!user) {
@@ -2824,9 +2838,9 @@ export default function App() {
   const themeValue = {
     t, lang,
     setLang: (l:"en"|"ar") => patch({ "prefs.language": l }),
-    faceId: profile?.prefs.faceId ?? false,
+    faceId: profile?.prefs?.faceId ?? false,
     setFaceId: (v:boolean) => patch({ "prefs.faceId": v }),
-    notifPrefs: profile?.prefs.notifications ?? { reminders:true, certs:true, growth:true },
+    notifPrefs: profile?.prefs?.notifications ?? { reminders:true, certs:true, growth:true },
     setNotifPref: (k:"reminders"|"certs"|"growth", v:boolean) => patch({ [`prefs.notifications.${k}`]: v }),
   }
 
@@ -2894,7 +2908,7 @@ export default function App() {
 
             {showNav && <BottomNav active={screen} onSelect={setScreen}/>}
             {showTour && tour && tourKey && (
-              <TutorialOverlay steps={tour} frameRef={frameRef} scale={isDevice ? scale : 1} onDone={()=>patch({ [`flags.toursSeen.${tourKey}`]: true, "stats.points": (profile?.stats.points ?? 0) + PTS_TOUR, "stats.level": progression((profile?.stats.points ?? 0) + PTS_TOUR).level })}/>
+              <TutorialOverlay steps={tour} frameRef={frameRef} scale={isDevice ? scale : 1} onDone={()=>patch({ [`flags.toursSeen.${tourKey}`]: true, "stats.points": (profile?.stats?.points ?? 0) + PTS_TOUR, "stats.level": progression((profile?.stats?.points ?? 0) + PTS_TOUR).level })}/>
             )}
           </div>
         </div>
