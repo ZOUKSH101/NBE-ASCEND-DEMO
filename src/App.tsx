@@ -5,7 +5,7 @@ import { useAuth, friendlyAuthError, type SessionUser } from "./lib/useAuth"
 import { firebaseConfigured } from "./lib/firebase"
 import {
   loadProfile, createProfile, patchProfile, loadGoals, addGoal,
-  loadHoldings, addHolding, describeHoldings, DEFAULT_PROFILE, readMirror, mirrorProfile,
+  loadHoldings, addHolding, describeHoldings, DEFAULT_PROFILE, readMirror, mirrorProfile, cycleRollover,
   type UserProfile, type GoalDoc, type HoldingDoc, type TourKey,
 } from "./lib/db"
 import logoImg from "./imports/ChatGPT_Image_Aug_20__2026__12_06_04_PM.png"
@@ -1064,7 +1064,12 @@ function SubscribeSheet({ product, isFund, onClose }: {
           ))}
         </div>
 
-        {err && <div style={{ background:`${ERR}16`, border:`1px solid ${ERR}44`, borderRadius:16, padding:"12px 14px", marginBottom:14, fontSize:12.5, color:t.text, lineHeight:1.6 }}>{err}</div>}
+        {err && <div style={{ background:`${ERR}16`, border:`1px solid ${ERR}44`, borderRadius:16, padding:"12px 14px", marginBottom:14, fontSize:12.5, color:t.text, lineHeight:1.6 }}>
+          {err}
+          {remaining === 0 && <div style={{ color:t.sub, marginTop:7 }}>
+            Youth accounts have a cap on how much can be committed per cycle. Yours refills to EGP {(profile?.limits?.cycleCap ?? 0).toLocaleString()} on {profile?.limits?.resetDate ?? "the next cycle"}.
+          </div>}
+        </div>}
 
         <div style={{ display:"flex", gap:10 }}>
           <button onClick={onClose} style={{ padding:"14px 20px", borderRadius:999, border:`1px solid ${t.border}`, background:"transparent", color:t.sub, fontSize:14, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }}>Cancel</button>
@@ -2691,6 +2696,11 @@ export default function App() {
         if (cancelled) return
         // Show the app as soon as the profile is known — goals and holdings are
         // two more round trips and nothing on first paint depends on them.
+        const rollover = cycleRollover(p)
+        if (rollover) {
+          p = { ...p, limits: { ...p.limits, remaining:p.limits.cycleCap, resetDate:String(rollover["limits.resetDate"]) } }
+          patchProfile(user.uid, rollover).catch(()=>{ /* applied locally regardless */ })
+        }
         setProfile(p)
         setScreen(p.flags.onboardingComplete ? "home" : "onboarding")
         setProfileReady(true)

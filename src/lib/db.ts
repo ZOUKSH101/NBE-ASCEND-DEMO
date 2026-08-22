@@ -77,6 +77,26 @@ export interface HoldingDoc {
   maturesAt?: string
 }
 
+/** ISO date one month on from `from`. */
+export function nextCycleDate(from = new Date()): string {
+  const d = new Date(from.getFullYear(), from.getMonth() + 1, 1)
+  return d.toISOString().slice(0,10)
+}
+
+/**
+ * The cycle cap is worthless without a rollover — spend it once and the user is
+ * locked out forever. Returns the patch to apply when the reset date has passed.
+ */
+export function cycleRollover(p:UserProfile|null): Record<string,unknown> | null {
+  if (!p?.limits?.resetDate) return null
+  const due = new Date(p.limits.resetDate).getTime()
+  if (!Number.isFinite(due) || Date.now() < due) return null
+  return {
+    "limits.remaining": p.limits.cycleCap,
+    "limits.resetDate": nextCycleDate(),
+  }
+}
+
 export const DEFAULT_PROFILE = (displayName:string, email:string): UserProfile => ({
   displayName,
   email,
@@ -95,7 +115,7 @@ export const DEFAULT_PROFILE = (displayName:string, email:string): UserProfile =
     reduceMotion: false,
     notifications: { reminders:true, certs:true, growth:true },
   },
-  limits: { remaining: 50000, cycleCap: 50000, resetDate: "2026-09-01" },
+  limits: { remaining: 50000, cycleCap: 50000, resetDate: nextCycleDate() },
   stats: { points: 0, level: 1, streakDays: 0 },
 })
 
@@ -110,6 +130,10 @@ const LS = {
   goals:   (uid:string) => `nbe:${uid}:goals`,
   holds:   (uid:string) => `nbe:${uid}:holdings`,
 }
+let seq = 0
+/** Date.now() collides when two records are created in the same millisecond. */
+const localId = () => `l${Date.now().toString(36)}${(seq++).toString(36)}${Math.random().toString(36).slice(2,6)}`
+
 const readLS = <T,>(k:string, fb:T):T => {
   try { const v = localStorage.getItem(k); return v ? JSON.parse(v) as T : fb } catch { return fb }
 }
@@ -120,19 +144,45 @@ const writeLS = (k:string, v:unknown) => {
 /* ─── Profile ──────────────────────────────────────────────────────────── */
 
 /**
+ * Fill any missing branch from the defaults. A document written by an earlier
+ * partial merge can be missing whole maps, and reading `profile.prefs.darkMode`
+ * off one of those throws — better to normalise once, here.
+ */
+export function normalizeProfile(raw:Partial<UserProfile>|null|undefined, displayName="", email=""): UserProfile {
+  const d = DEFAULT_PROFILE(raw?.displayName ?? displayName, raw?.email ?? email)
+  return {
+    ...d, ...raw,
+    displayName: raw?.displayName || d.displayName,
+    email:       raw?.email       || d.email,
+    initials:    raw?.initials    || d.initials,
+    flags:  { ...d.flags,  ...(raw?.flags  ?? {}),
+              toursSeen: { ...d.flags.toursSeen, ...((raw?.flags as any)?.toursSeen ?? {}) } },
+    prefs:  { ...d.prefs,  ...(raw?.prefs  ?? {}),
+              notifications: { ...d.prefs.notifications, ...((raw?.prefs as any)?.notifications ?? {}) } },
+    limits: { ...d.limits, ...(raw?.limits ?? {}) },
+    stats:  { ...d.stats,  ...(raw?.stats  ?? {}) },
+  }
+}
+
+/**
  * Last profile Firestore gave us. A transient read failure must not look like
  * a brand-new user, or the app sends them back through onboarding.
  */
-export const readMirror = (uid:string): UserProfile | null =>
-  readLS<UserProfile|null>(LS.mirror(uid), null)
+export const readMirror = (uid:string): UserProfile | null => {
+  const raw = readLS<Partial<UserProfile>|null>(LS.mirror(uid), null)
+  return raw ? normalizeProfile(raw) : null
+}
 
 const writeMirror = (uid:string, p:UserProfile) => writeLS(LS.mirror(uid), p)
 
 export async function loadProfile(uid:string): Promise<UserProfile | null> {
-  if (!firebaseConfigured || !db) return readLS<UserProfile|null>(LS.profile(uid), null)
+  if (!firebaseConfigured || !db) {
+    const local = readLS<Partial<UserProfile>|null>(LS.profile(uid), null)
+    return local ? normalizeProfile(local) : null
+  }
   const snap = await getDoc(doc(db, "users", uid))
   if (!snap.exists()) return null
-  const p = snap.data() as UserProfile
+  const p = normalizeProfile(snap.data() as Partial<UserProfile>)
   writeMirror(uid, p)
   return p
 }
@@ -192,7 +242,7 @@ export async function loadGoals(uid:string): Promise<GoalDoc[]> {
 
 export async function addGoal(uid:string, goal:Omit<GoalDoc,"id">): Promise<GoalDoc> {
   if (!firebaseConfigured || !db) {
-    const entry = { ...goal, id: Date.now().toString() }
+    const entry = { ...goal, id: localId() }
     writeLS(LS.goals(uid), [...readLS<GoalDoc[]>(LS.goals(uid), []), entry])
     return entry
   }
@@ -210,7 +260,7 @@ export async function loadHoldings(uid:string): Promise<HoldingDoc[]> {
 
 export async function addHolding(uid:string, holding:Omit<HoldingDoc,"id">): Promise<HoldingDoc> {
   if (!firebaseConfigured || !db) {
-    const entry = { ...holding, id: Date.now().toString() }
+    const entry = { ...holding, id: localId() }
     writeLS(LS.holds(uid), [entry, ...readLS<HoldingDoc[]>(LS.holds(uid), [])])
     return entry
   }
