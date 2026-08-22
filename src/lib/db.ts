@@ -41,7 +41,7 @@ export interface UserLimits {
   resetDate: string
 }
 
-export interface UserStats { points:number; level:number; streakDays:number }
+export interface UserStats { points:number; level:number; streakDays:number; lastActive?:string }
 
 export interface UserProfile {
   displayName: string

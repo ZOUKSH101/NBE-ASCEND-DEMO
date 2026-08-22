@@ -105,6 +105,8 @@ const TR: Record<string,Record<"en"|"ar",string>> = {
   security: { en:"Security",      ar:"الأمان" },
   help:     { en:"Help",          ar:"المساعدة" },
   gmorn:    { en:"Good morning,", ar:"صباح الخير،" },
+  gaft:     { en:"Good afternoon,", ar:"مساء الخير،" },
+  geve:     { en:"Good evening,", ar:"مساء الخير،" },
   balance:  { en:"Total Balance", ar:"إجمالي الرصيد" },
   invest_title: { en:"Available to Invest", ar:"متاح للاستثمار" },
   cur_inv:  { en:"Currently Invested",      ar:"المستثمر حالياً" },
@@ -132,14 +134,26 @@ const newLocalId = () => `l${Date.now().toString(36)}${(localSeq++).toString(36)
 /** Width the UI was laid out against. Everything scales relative to this. */
 const DESIGN_WIDTH = 390
 
+/** Height the desktop mockup frame wants, plus the page's 24px padding. */
+const FRAME_HEIGHT = 820
+const FRAME_FITS = FRAME_HEIGHT + 48
+
 const measure = () => {
-  if (typeof window === "undefined") return { isDevice:false, scale:1 }
+  if (typeof window === "undefined") return { isDevice:false, scale:1, frameHeight:FRAME_HEIGHT }
   const w = window.innerWidth
-  const isDevice = w <= 560
+  const h = window.innerHeight
+  // A phone in landscape is wide but short. Keying off width alone dropped it
+  // into the 820px desktop frame inside a ~390px viewport, with the page set
+  // to overflow:hidden — the UI became unreachable. The short side decides.
+  const short = Math.min(w, h)
+  const isDevice = short <= 560
   // 320 (SE) → 0.86, 390 (design) → 1, 430 (Pro Max) → 1.10.
   // Clamped so text never gets unreadably small or cartoonishly large.
-  const scale = isDevice ? Math.min(Math.max(w / DESIGN_WIDTH, 0.84), 1.14) : 1
-  return { isDevice, scale: Math.round(scale * 1000) / 1000 }
+  const scale = isDevice ? Math.min(Math.max(short / DESIGN_WIDTH, 0.84), 1.14) : 1
+  // Short desktop windows and iPad landscape can't seat a full 820px frame;
+  // shrink it rather than letting overflow:hidden clip both ends.
+  const frameHeight = h >= FRAME_FITS ? FRAME_HEIGHT : Math.max(480, h - 48)
+  return { isDevice, scale: Math.round(scale * 1000) / 1000, frameHeight }
 }
 
 function useViewport() {
@@ -167,6 +181,8 @@ const PTS_PER_LEVEL = 1000
 const PTS_GOAL = 75
 const PTS_INVEST = 100
 const PTS_TOUR = 25
+/** Redeem tiles read 100 pts = EGP 10, so the wallet figure must use the same rate. */
+const PTS_PER_EGP = 10
 
 function progression(points:number) {
   const level = Math.min(LEVEL_NAMES.length, Math.floor(points / PTS_PER_LEVEL) + 1)
@@ -180,9 +196,31 @@ function progression(points:number) {
     toNext: maxed ? 0 : nextAt - points,
     pct: maxed ? 100 : Math.round(((points - floor) / PTS_PER_LEVEL) * 100),
     maxed,
-    cashback: Math.floor(points / 20),
+    cashback: Math.floor(points / PTS_PER_EGP),
   }
 }
+
+/** Calendar date in the user's own timezone. toISOString() is UTC, which put
+ *  a purchase made after midnight in Cairo on the previous day. */
+const localISO = (d:Date = new Date()) =>
+  new Date(d.getTime() - d.getTimezoneOffset()*60000).toISOString().slice(0,10)
+
+/** The Streak pill read "0 days" forever — nothing ever advanced the counter.
+ *  Consecutive calendar days keep it, one missed day resets it to 1. */
+function streakUpdate(p:UserProfile): Record<string,unknown> | null {
+  const today = localISO()
+  const last = p.stats.lastActive
+  if (last === today) return null
+  const yesterday = localISO(new Date(Date.now() - 86400000))
+  const days = last === yesterday ? (p.stats.streakDays || 0) + 1 : 1
+  return { "stats.streakDays": days, "stats.lastActive": today }
+}
+
+/** The greeting was fixed at "Good morning" whatever the clock said. */
+const greetKey = () => { const h = new Date().getHours(); return h < 12 ? "gmorn" : h < 18 ? "gaft" : "geve" }
+
+/** Years a product runs for, read off its duration label. Funds have none. */
+const termYears = (dur:string) => { const m = dur.match(/(\d+)\s*Year/i); return m ? Number(m[1]) : 1 }
 
 // ─── Primitives ───────────────────────────────────────────────────────────────
 function Ring({ pct, size=60, w=5, color=GR }: { pct:number; size?:number; w?:number; color?:string }) {
@@ -662,6 +700,24 @@ function GoalSetupSheet({ onGoalSet }: { onGoalSet:(entry:GoalEntry)=>void }) {
   )
 }
 
+// ─── Product catalogue (module scope: Home quotes it, Invest sells from it) ──
+interface Product { name:string; dur:string; rate:number; min:number; color:string; tag:string; risk:string; access:string }
+
+const CERTS: Product[] = [
+  { name:"Premium Certificate", dur:"1 Year",  rate:25, min:1000,  color:GR,  tag:"MOST POPULAR",  risk:"", access:"No early withdrawal — it runs the full year." },
+  { name:"Growth Certificate",  dur:"3 Years", rate:22, min:5000,  color:GRD, tag:"",              risk:"", access:"No withdrawal before maturity. Interest is paid to your account each year." },
+  { name:"Long-Term Certificate",dur:"5 Years",rate:18, min:10000, color:GD,  tag:"BEST FOR GOALS",risk:"", access:"Partial withdrawal allowed after year 2." },
+]
+const FUNDS: Product[] = [
+  { name:"Money Market Fund",        dur:"Daily Access",  rate:19, min:500,  color:GRD, tag:"CALMEST",       risk:"Low",    access:"Withdraw any business day." },
+  { name:"Balanced Growth Fund",     dur:"2+ Yr Horizon", rate:24, min:2000, color:GR,  tag:"MOST POPULAR",  risk:"Medium", access:"Weekly redemption, subject to notice." },
+  { name:"Equity Opportunities Fund",dur:"3+ Yr Horizon", rate:30, min:3000, color:GD,  tag:"BIGGEST SWINGS",risk:"High",   access:"Weekly redemption, subject to notice." },
+]
+const productByName = (n:string) => [...CERTS, ...FUNDS].find(p => p.name === n) ?? null
+
+type NotifType = "reminder"|"certificate"|"growth"
+interface Notif { id:number; type:NotifType; title:string; body:string; time:string; read:boolean }
+
 // ─── Built-in Goals (defined here so HomeScreen can reference them) ───────────
 /* Built-in goals evaluate their own steps against the account rather than
    carrying a fixed percentage, so the ring always reflects real progress. */
@@ -723,11 +779,14 @@ function HomeScreen({ nav, userGoals, builtinActive, homeCardGoalId, setHomeCard
   setHomeCardGoalId:(id:string|null)=>void;
   onStartNewGoal:()=>void;
 }) {
-  const { t, lang } = useT()
+  const { t, lang, notifPrefs } = useT()
   const { profile, holdings } = useApp()
   const stats = profile?.stats ?? { points:0, level:1, streakDays:0 }
   const prog = progression(stats.points)
   const invested = holdings.reduce((n,h)=>n+h.amount, 0)
+
+  const notifEnabled = (n:Notif) => n.type==="reminder" ? notifPrefs.reminders : n.type==="certificate" ? notifPrefs.certs : notifPrefs.growth
+  const unreadNotifs = buildNotifs(holdings, profile).filter(n => !n.read && notifEnabled(n)).length
 
   const goalCtx: GoalCtx = { profile, holdings, goalCount: userGoals.length }
   const builtinGoalEntries: GoalEntry[] = BUILTIN_GOALS
@@ -739,12 +798,17 @@ function HomeScreen({ nav, userGoals, builtinActive, homeCardGoalId, setHomeCard
   const selectedIdx = allDisplayGoals.findIndex(g => g.id === (selectedGoal?.id ?? ""))
   const hasMultiple = allDisplayGoals.length > 1
 
-  const goalBudgetNum = selectedGoal ? (parseInt((selectedGoal.budget||"").replace(/\D/g,""))||30000) : 30000
-  // Money actually committed counts toward a user goal; built-in goals keep
-  // their own step-based percentage.
-  const goalSaved = selectedGoal?.type === "builtin" ? 0 : Math.min(invested, goalBudgetNum)
-  const goalPct = selectedGoal?.type === "builtin"
-    ? (selectedGoal?.pct ?? 0)
+  // A built-in goal is a checklist, not a savings target. Rendering it in the
+  // money layout invented a target (the old 30,000 fallback) and then reported
+  // EGP 0 saved against it while the ring read 50% off completed steps.
+  const builtinDef = selectedGoal?.type === "builtin"
+    ? BUILTIN_GOALS.find(b => b.title === selectedGoal.name) ?? null : null
+  const selectedBuiltin = builtinDef ? evalBuiltin(builtinDef, goalCtx) : null
+  const nextStep = selectedBuiltin?.steps.find(st => !st.done)?.label ?? null
+
+  const goalBudgetNum = selectedGoal ? (parseInt((selectedGoal.budget||"").replace(/\D/g,""))||0) : 0
+  const goalSaved = Math.min(invested, goalBudgetNum || invested)
+  const goalPct = selectedBuiltin ? selectedBuiltin.pct
     : goalBudgetNum > 0 ? Math.min(100, Math.round((goalSaved / goalBudgetNum) * 100)) : 0
   const goalRemaining = Math.max(0, goalBudgetNum - goalSaved)
 
@@ -773,14 +837,14 @@ function HomeScreen({ nav, userGoals, builtinActive, homeCardGoalId, setHomeCard
       <div style={{ display:"flex", gap:10, alignItems:"center" }}>
         <button onClick={()=>nav("notifications")} style={{ width:38, height:38, borderRadius:19, background:t.chip, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, display:"flex", alignItems:"center", justifyContent:"center", border:"none", cursor:"pointer", position:"relative" }}>
           <Ic n="bell" c={t.text} s={18}/>
-          <div style={{ position:"absolute", top:8, right:8, width:8, height:8, borderRadius:4, background:ERR, border:"1.5px solid white" }}/>
+          {unreadNotifs > 0 && <div style={{ position:"absolute", top:8, right:8, width:8, height:8, borderRadius:4, background:ERR, border:"1.5px solid white" }}/>}
         </button>
         <div onClick={()=>nav("profile")} style={{ width:38, height:38, borderRadius:19, background:`linear-gradient(135deg,${GR},${GRD})`, display:"flex", alignItems:"center", justifyContent:"center", color:"white", fontSize:13, fontWeight:800, cursor:"pointer" }}>{profile?.initials ?? "NB"}</div>
       </div>
     </div>
 
     <div style={{ padding:"14px 20px 0" }}>
-      <div style={{ fontSize:13, color:t.sub }}>{tx("gmorn",lang)}</div>
+      <div style={{ fontSize:13, color:t.sub }}>{tx(greetKey(),lang)}</div>
       <div style={{ fontSize:20, fontWeight:800, color:t.text, marginTop:2, whiteSpace:"nowrap" as const, overflow:"hidden", textOverflow:"ellipsis" }}>{profile?.displayName ?? "there"}</div>
     </div>
 
@@ -822,10 +886,16 @@ function HomeScreen({ nav, userGoals, builtinActive, homeCardGoalId, setHomeCard
                   <span style={{ fontSize:13, fontWeight:800, color:"white" }}>{goalPct}%</span>
                 </div>
               </div>
-              <div style={{ flex:1 }}>
-                <div style={{ fontSize:11, color:"rgba(255,255,255,0.55)", marginBottom:4 }}>Saved so far</div>
-                <div style={{ fontSize:22, fontWeight:800, letterSpacing:-0.5 }}>EGP {goalSaved.toLocaleString()}</div>
-                <div style={{ fontSize:11, color:"rgba(255,255,255,0.55)", marginTop:2 }}>of EGP {goalBudgetNum.toLocaleString()} target</div>
+              <div style={{ flex:1, minWidth:0 }}>
+                {selectedBuiltin ? <>
+                  <div style={{ fontSize:11, color:"rgba(255,255,255,0.55)", marginBottom:4 }}>Milestones done</div>
+                  <div style={{ fontSize:22, fontWeight:800, letterSpacing:-0.5 }}>{selectedBuiltin.done} of {selectedBuiltin.steps.length}</div>
+                  <div style={{ fontSize:11, color:"rgba(255,255,255,0.55)", marginTop:2, lineHeight:1.4 }}>{nextStep ? `Next: ${nextStep}` : "All steps complete"}</div>
+                </> : <>
+                  <div style={{ fontSize:11, color:"rgba(255,255,255,0.55)", marginBottom:4 }}>Saved so far</div>
+                  <div style={{ fontSize:22, fontWeight:800, letterSpacing:-0.5 }}>EGP {goalSaved.toLocaleString()}</div>
+                  <div style={{ fontSize:11, color:"rgba(255,255,255,0.55)", marginTop:2 }}>{goalBudgetNum > 0 ? `of EGP ${goalBudgetNum.toLocaleString()} target` : "No target amount set"}</div>
+                </>}
               </div>
             </div>
             <div style={{ marginBottom:14 }}>
@@ -833,19 +903,23 @@ function HomeScreen({ nav, userGoals, builtinActive, homeCardGoalId, setHomeCard
                 <div style={{ width:`${goalPct}%`, height:6, background:`linear-gradient(90deg,${GD},${GDS})`, borderRadius:6, transition:"width 0.6s ease" }}/>
               </div>
               <div style={{ display:"flex", justifyContent:"space-between", marginTop:4 }}>
-                <span style={{ fontSize:10, color:"rgba(255,255,255,0.45)" }}>EGP {goalSaved.toLocaleString()} saved</span>
-                <span style={{ fontSize:10, color:"rgba(255,255,255,0.45)" }}>EGP {goalBudgetNum.toLocaleString()} goal</span>
+                <span style={{ fontSize:10, color:"rgba(255,255,255,0.45)" }}>{selectedBuiltin ? `${selectedBuiltin.done} done` : `EGP ${goalSaved.toLocaleString()} saved`}</span>
+                <span style={{ fontSize:10, color:"rgba(255,255,255,0.45)" }}>{selectedBuiltin ? `${selectedBuiltin.steps.length} milestones` : goalBudgetNum > 0 ? `EGP ${goalBudgetNum.toLocaleString()} goal` : "no target"}</span>
               </div>
             </div>
             <div style={{ display:"flex", borderTop:"1px solid rgba(255,255,255,0.12)", paddingTop:14, gap:12 }}>
               <div style={{ flex:1 }}>
-                <div style={{ fontSize:10, color:"rgba(255,255,255,0.45)" }}>Still Needed</div>
-                <div style={{ fontSize:15, fontWeight:800, color:t.gold, marginTop:3 }}>EGP {goalRemaining.toLocaleString()}</div>
+                <div style={{ fontSize:10, color:"rgba(255,255,255,0.45)" }}>{selectedBuiltin ? "Steps Left" : "Still Needed"}</div>
+                <div style={{ fontSize:15, fontWeight:800, color:t.gold, marginTop:3 }}>
+                  {selectedBuiltin ? `${selectedBuiltin.steps.length - selectedBuiltin.done}` : goalBudgetNum > 0 ? `EGP ${goalRemaining.toLocaleString()}` : "—"}
+                </div>
               </div>
               <div style={{ width:1, background:"rgba(255,255,255,0.12)" }}/>
               <div style={{ flex:1 }}>
-                <div style={{ fontSize:10, color:"rgba(255,255,255,0.45)" }}>Time Left</div>
-                <div style={{ fontSize:15, fontWeight:800, color:"#4ADE80", marginTop:3 }}>{calcTimeLeft()}</div>
+                <div style={{ fontSize:10, color:"rgba(255,255,255,0.45)" }}>{selectedBuiltin ? "Invested" : "Time Left"}</div>
+                <div style={{ fontSize:15, fontWeight:800, color:"#4ADE80", marginTop:3 }}>
+                  {selectedBuiltin ? `EGP ${invested.toLocaleString()}` : calcTimeLeft()}
+                </div>
               </div>
             </div>
           </>
@@ -857,7 +931,7 @@ function HomeScreen({ nav, userGoals, builtinActive, homeCardGoalId, setHomeCard
     <div id="tut-home-tips" style={{ margin:"14px 16px 0" }}>
       <div style={{ fontSize:11, fontWeight:800, color:t.sub, letterSpacing:1.2, textTransform:"uppercase" as const, marginBottom:10 }}>Tips to Reach Your Goal</div>
       {([
-        { icon:"chart",   color:t.brand,  title:"Invest monthly",    tip:"Put EGP 500/month into a Premium Certificate — earn 25% annual return guaranteed by CBE." },
+        { icon:"chart",   color:t.brand,  title:"Start with a certificate", tip:`${CERTS[0].name}: from EGP ${CERTS[0].min.toLocaleString()}, ${CERTS[0].rate}% a year fixed for ${CERTS[0].dur.toLowerCase()}.` },
         { icon:"wallet",  color:t.gold,  title:"Save 20% weekly",   tip:"Set aside 20% of your allowance every week. Small habits build into big balances over time." },
         { icon:"list",    color:t.brand, title:"Review your spending", tip:"Use Daily Review to spot where your money goes and find savings opportunities each day." },
       ]).map((item,i)=>(
@@ -1008,8 +1082,8 @@ function SubscribeSheet({ product, isFund, onClose }: {
         rate: product.rate,
         term: product.dur,
         status: "active",
-        purchasedAt: today.toISOString().slice(0,10),
-        ...(matures ? { maturesAt: matures.toISOString().slice(0,10) } : {}),
+        purchasedAt: localISO(today),
+        ...(matures ? { maturesAt: localISO(matures) } : {}),
       })
       patch({
         "limits.remaining": Math.max(0, remaining - value),
@@ -1138,7 +1212,7 @@ const CERT_DETAILS = [
     benefits:[{label:"Interest Rate",value:"22% per year — fixed"},{label:"Capital Protection",value:"Full protection of your deposit"},{label:"Periodic Interest",value:"Paid annually to your account"},{label:"Long-term Growth",value:"High total return over 3 years"},{label:"Best For",value:"Medium-term financial goals"}],
   },
   {
-    about:"The Long-Term Certificate is for ambitious savers who can commit for 5 years. At 18% annually the compounded total is significant, with partial access allowed after year 2.",
+    about:"The Long-Term Certificate is for ambitious savers who can commit for 5 years. At 18% a year the total interest is significant, with partial access allowed after year 2.",
     conditions:[{label:"Eligibility",value:"NBE account holders aged 16+"},{label:"Minimum Amount",value:"EGP 10,000"},{label:"Duration",value:"5 Years"},{label:"Currency",value:"Egyptian Pound (EGP)"},{label:"Withdrawal",value:"Partial withdrawal allowed after year 2"}],
     benefits:[{label:"Interest Rate",value:"18% per year — fixed"},{label:"Flexible Withdrawal",value:"Partial access after 2 years"},{label:"Capital Protection",value:"100% guaranteed"},{label:"Wealth Building",value:"Maximum long-term value"},{label:"Best For",value:"Long-term life goals"}],
   },
@@ -1186,16 +1260,8 @@ function InvestScreen() {
   const [explainer, setExplainer] = useState(false)
   const [buying, setBuying] = useState(false)
 
-  const certs = [
-    { name:"Premium Certificate", dur:"1 Year",  rate:25, min:1000,  color:GR,  tag:"MOST POPULAR", risk:"" },
-    { name:"Growth Certificate",  dur:"3 Years", rate:22, min:5000,  color:GRD, tag:"", risk:"" },
-    { name:"Long-Term Certificate",dur:"5 Years",rate:18, min:10000, color:GD,  tag:"BEST FOR GOALS", risk:"" },
-  ]
-  const funds = [
-    { name:"Money Market Fund",        dur:"Daily Access",  rate:19, min:500,  color:GRD, tag:"CALMEST", risk:"Low" },
-    { name:"Balanced Growth Fund",     dur:"2+ Yr Horizon", rate:24, min:2000, color:GR,  tag:"MOST POPULAR", risk:"Medium" },
-    { name:"Equity Opportunities Fund",dur:"3+ Yr Horizon", rate:30, min:3000, color:GD,  tag:"BIGGEST SWINGS", risk:"High" },
-  ]
+  const certs = CERTS
+  const funds = FUNDS
   const owned = holdings.filter(h => h.kind === (productType==="funds" ? "fund" : "certificate"))
   const ownedTotal = owned.reduce((n,h)=>n+h.amount, 0)
   const ownedProjected = owned.reduce((n,h)=>n + holdingProgress(h).atMaturity, 0)
@@ -1203,7 +1269,11 @@ function InvestScreen() {
   const products = isFund ? funds : certs
   const details  = isFund ? FUND_DETAILS : CERT_DETAILS
   const switchType = (p:"certs"|"funds") => { setProductType(p); setSelected(0); setLearnMore(null) }
-  const cert = products[selected], profit = amount*cert.rate/100, total = amount+profit
+  const cert = products[selected]
+  // A 5-year certificate pays five years of interest; the old figure showed one
+  // year's under a "Total After 5 Years" label.
+  const calcYears = isFund ? 1 : termYears(cert.dur)
+  const profit = Math.round(amount*cert.rate/100*calcYears), total = amount+profit
   const glass = { background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, border:`1px solid ${t.stroke}`, boxShadow:t.shadow }
 
   // ── Plain-language explainer ──
@@ -1361,7 +1431,7 @@ function InvestScreen() {
                 <span>{pr.pct}% through the term</span>
                 <span>{pr.daysLeft === 0 ? "Matured" : `${pr.daysLeft} days left`}</span>
               </div>
-              <Bar pct={pr.pct} color={cert.color} h={5}/>
+              <Bar pct={pr.pct} color={productByName(h.productName)?.color ?? cert.color} h={5}/>
             </div>}
 
             <div style={{ display:"grid", gridTemplateColumns:"repeat(2, minmax(0,1fr))", gap:9 }}>
@@ -1379,7 +1449,7 @@ function InvestScreen() {
               {isFund
                 ? "Funds have no maturity date and no fixed rate — these figures are an estimate from the historical average, and the real value moves every day."
                 : h.maturesAt
-                  ? `Pays out on ${h.maturesAt}. Locked for the first six months from purchase.`
+                  ? `Pays out on ${h.maturesAt}. ${productByName(h.productName)?.access ?? ""}`
                   : "No maturity date recorded."}
             </div>
           </div>
@@ -1457,7 +1527,7 @@ function InvestScreen() {
 
       <div id="tut-invest-calc" style={{ ...glass, borderRadius:22, padding:"20px", marginBottom:28 }}>
         <div style={{ fontSize:15, fontWeight:700, color:t.text, marginBottom:3 }}>Growth Calculator</div>
-        <div style={{ fontSize:12, color:t.sub, marginBottom:18, lineHeight:1.6 }}>{isFund?`If this fund keeps doing what it has done on average (${cert.rate}%), here is roughly where you land. It is an estimate, not a promise.`:`See how much you could earn at ${cert.rate}% over ${cert.dur.toLowerCase()}`}</div>
+        <div style={{ fontSize:12, color:t.sub, marginBottom:18, lineHeight:1.6 }}>{isFund?`If this fund keeps doing what it has done on average (${cert.rate}%), here is roughly where you land after one year. It is an estimate, not a promise.`:`See how much you could earn at ${cert.rate}% a year over ${cert.dur.toLowerCase()} — ${calcYears} × EGP ${Math.round(amount*cert.rate/100).toLocaleString()} in interest`}</div>
         <div style={{ marginBottom:18 }}>
           <div style={{ display:"flex", justifyContent:"space-between", marginBottom:9 }}>
             <span style={{ fontSize:13, color:t.sub }}>Investment Amount</span>
@@ -1472,7 +1542,7 @@ function InvestScreen() {
             <div style={{ fontSize:21, fontWeight:800, color:t.brand, marginTop:6 }}>+EGP {profit.toLocaleString()}</div>
           </div>
           <div style={{ background:`${GD}${t.dm?"22":"18"}`, border:`1px solid ${GD}38`, borderRadius:16, padding:"15px" }}>
-            <div style={{ fontSize:10, color:t.sub }}>Total After {cert.dur}</div>
+            <div style={{ fontSize:10, color:t.sub }}>{isFund ? "Total After 1 Year" : `Total After ${cert.dur}`}</div>
             <div style={{ fontSize:21, fontWeight:800, color:t.gold, marginTop:6 }}>EGP {total.toLocaleString()}</div>
           </div>
         </div>
@@ -1735,6 +1805,13 @@ function GoalsScreen({ userGoals, setUserGoals, builtinActive, setBuiltinActive,
   const { profile, holdings } = useApp()
   const goalCtx: GoalCtx = { profile, holdings, goalCount: userGoals.length }
   const BUILTINS = BUILTIN_GOALS.map(g => evalBuiltin(g, goalCtx))
+  const investedTotal = holdings.reduce((n,h)=>n+h.amount, 0)
+  /** Same rule as the Home card: money committed, measured against the target. */
+  const goalMoney = (g:GoalEntry) => {
+    const target = parseInt((g.budget||"").replace(/\D/g,"")) || 0
+    const saved = target ? Math.min(investedTotal, target) : investedTotal
+    return { target, saved, pct: target ? Math.min(100, Math.round(saved/target*100)) : 0 }
+  }
 
   const getAllDisplayGoals = (uGoals:GoalEntry[], bActive:boolean[]): GoalEntry[] => [
     ...uGoals,
@@ -1923,9 +2000,13 @@ function GoalsScreen({ userGoals, setUserGoals, builtinActive, setBuiltinActive,
                   <div style={{ fontSize:12, fontWeight:600, color:t.text, marginTop:2 }}>{g.end||"—"}</div>
                 </div>
               </div>
-              <Bar pct={0} color={GR} h={4} trackColor={track}/>
+              <Bar pct={goalMoney(g).pct} color={GR} h={4} trackColor={track}/>
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginTop:10 }}>
-                <div style={{ fontSize:11, color:t.sub }}>Goal is active — keep saving!</div>
+                <div style={{ fontSize:11, color:t.sub }}>
+                  {goalMoney(g).target
+                    ? `EGP ${goalMoney(g).saved.toLocaleString()} of ${goalMoney(g).target.toLocaleString()} invested · ${goalMoney(g).pct}%`
+                    : `EGP ${investedTotal.toLocaleString()} invested · no target set`}
+                </div>
                 <button onClick={()=>setHomeCardGoalId(g.id)} style={{ padding:"5px 12px", borderRadius:999, border:`1.5px solid ${isSelected?GR:t.border}`, background:isSelected?`${GR}14`:"transparent", color:isSelected?GR:t.sub, fontSize:11, fontWeight:700, cursor:"pointer", transition:"all 0.2s" }}>
                   {isSelected ? "✓ Shown on Home" : "Show on Home"}
                 </button>
@@ -1979,6 +2060,7 @@ function RewardsScreen() {
 
   const stats = profile?.stats ?? { points:0, level:1, streakDays:0 }
   const prog = progression(stats.points)
+  const [redeemNote, setRedeemNote] = useState(false)
 
   return <div style={{ background:"transparent", minHeight:"100%" }}>
     {/* Hero */}
@@ -1995,6 +2077,9 @@ function RewardsScreen() {
       </div>
       <div style={{ display:"flex", justifyContent:"space-between", fontSize:10, color:"rgba(255,255,255,0.38)", marginBottom:5 }}><span>Level {prog.level}</span><span>{prog.maxed ? "Max" : `Level ${prog.level+1} · ${prog.nextAt.toLocaleString()} pts`}</span></div>
       <div style={{ height:6, background:"rgba(255,255,255,0.1)", borderRadius:4, overflow:"hidden", marginBottom:16 }}><div style={{ width:`${prog.pct}%`, height:6, background:`linear-gradient(90deg,${GD},${GDS})`, borderRadius:4, transition:"width 0.5s ease" }}/></div>
+      {redeemNote && <div style={{ background:"rgba(255,255,255,0.1)", border:"1px solid rgba(255,255,255,0.16)", borderRadius:14, padding:"12px 14px", marginBottom:12, fontSize:11.5, color:"rgba(255,255,255,0.75)", lineHeight:1.6 }}>
+        Redemption is not part of this demo — points and cashback are tracked, but nothing is paid out.
+      </div>}
       {/* Cashback CTA */}
       <div style={{ background:"rgba(255,255,255,0.08)", borderRadius:14, padding:"14px 16px", display:"flex", justifyContent:"space-between", alignItems:"center", border:"1px solid rgba(255,255,255,0.1)" }}>
         <div>
@@ -2002,7 +2087,10 @@ function RewardsScreen() {
           <div style={{ fontSize:11, color:"rgba(255,255,255,0.45)" }}>Available Cashback</div>
           <div style={{ fontSize:28, fontWeight:800, color:t.gold }}>EGP {prog.cashback.toLocaleString()}</div>
         </div>
-        <button id="tut-rewards-redeem" style={{ padding:"12px 18px", borderRadius:999, background:GD, color:"white", border:"none", fontSize:13, fontWeight:700, cursor:"pointer", flexShrink:0 }}>Redeem Points</button>
+        <button id="tut-rewards-redeem" onClick={()=>setRedeemNote(true)} disabled={stats.points < redeemOptions[0].pts}
+          style={{ padding:"12px 18px", borderRadius:999, background:stats.points < redeemOptions[0].pts ? "rgba(255,255,255,0.14)" : GD, color:stats.points < redeemOptions[0].pts ? "rgba(255,255,255,0.5)" : "white", border:"none", fontSize:13, fontWeight:700, cursor:stats.points < redeemOptions[0].pts ? "default" : "pointer", flexShrink:0 }}>
+          {stats.points < redeemOptions[0].pts ? `${redeemOptions[0].pts - stats.points} pts to go` : "Redeem Points"}
+        </button>
       </div>
     </div>
 
@@ -2036,7 +2124,8 @@ function RewardsScreen() {
       </div>
 
       {/* Partner Rewards */}
-      <div style={{ fontSize:11, fontWeight:800, color:t.sub, letterSpacing:1.2, textTransform:"uppercase" as const, marginBottom:12 }}>Partner Rewards</div>
+      <div style={{ fontSize:11, fontWeight:800, color:t.sub, letterSpacing:1.2, textTransform:"uppercase" as const, marginBottom:4 }}>Partner Rewards</div>
+      <div style={{ fontSize:11, color:t.sub, marginBottom:12, lineHeight:1.6 }}>Examples of the kind of partner offer this programme would carry — none of these are live deals.</div>
       <div style={{ display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:10, marginBottom:18 }}>
         {partners.map((p,i)=><div key={i} style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, border:`1px solid ${t.stroke}`, borderRadius:18, padding:"14px", boxShadow:`0 1px 5px rgba(0,0,0,${t.dm?0.18:0.05})` }}>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:8 }}>
@@ -2074,7 +2163,7 @@ function DailyReviewScreen({ nav }: { nav:(s:Screen)=>void }) {
   const { t } = useT()
   const { holdings, profile } = useApp()
   const today = new Date()
-  const todayISO = today.toISOString().slice(0,10)
+  const todayISO = localISO(today)
   const boughtToday = holdings.filter(h => h.purchasedAt === todayISO)
   const investedToday = boughtToday.reduce((n,h)=>n+h.amount, 0)
   const investedTotal = holdings.reduce((n,h)=>n+h.amount, 0)
@@ -2086,7 +2175,7 @@ function DailyReviewScreen({ nav }: { nav:(s:Screen)=>void }) {
   ]
   const totalSpent = spending.reduce((s,c)=>s+c.amt,0)
   const maxAmt = Math.max(...spending.map(c=>c.amt))
-  const topCategory = spending[0].label
+  const topCategory = spending.reduce((a,b)=>b.amt>a.amt?b:a).label
 
   return <div style={{ background:"transparent", minHeight:"100%" }}>
     {/* Header */}
@@ -2143,17 +2232,24 @@ function DailyReviewScreen({ nav }: { nav:(s:Screen)=>void }) {
       {/* Investment Activity */}
       <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, border:`1px solid ${t.stroke}`, borderRadius:20, padding:"16px", marginBottom:14, boxShadow:`0 1px 6px rgba(0,0,0,${t.dm?0.2:0.06})` }}>
         <div style={{ fontSize:14, fontWeight:800, color:t.text, marginBottom:14 }}>Investments</div>
-        <div style={{ background:t.dm?`${GR}18`:GRLL, borderRadius:12, padding:"14px 16px", display:"flex", alignItems:"center", gap:14, border:`1px solid ${GR}20` }}>
-          <div style={{ width:44, height:44, borderRadius:13, background:`${GR}18`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}><Ic n="trending" c={t.brand} s={22}/></div>
-          <div style={{ flex:1 }}>
-            <div style={{ fontSize:16, fontWeight:800, color:t.text }}>EGP 1,000</div>
-            <div style={{ fontSize:12, color:t.sub, marginTop:2 }}>Invested Today · Premium Certificate</div>
-          </div>
-          <div style={{ textAlign:"right" as const }}>
-            <div style={{ fontSize:12, fontWeight:700, color:t.brand }}>+EGP 25</div>
-            <div style={{ fontSize:10, color:t.sub, marginTop:1 }}>expected</div>
-          </div>
-        </div>
+        {boughtToday.length === 0
+          ? <div style={{ background:t.chip, borderRadius:12, padding:"14px 16px", fontSize:12.5, color:t.sub, lineHeight:1.6, border:`1px solid ${t.stroke}` }}>
+              Nothing invested today.{holdings.length > 0 ? ` You hold EGP ${investedTotal.toLocaleString()} across ${holdings.length} ${holdings.length===1?"product":"products"}.` : " The Invest tab is where you start."}
+            </div>
+          : boughtToday.map(h => {
+              const pr = holdingProgress(h)
+              return <div key={h.id} style={{ background:t.dm?`${GR}18`:GRLL, borderRadius:12, padding:"14px 16px", display:"flex", alignItems:"center", gap:14, border:`1px solid ${GR}20`, marginBottom:8 }}>
+                <div style={{ width:44, height:44, borderRadius:13, background:`${GR}18`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}><Ic n={h.kind==="fund"?"trending":"shield"} c={t.brand} s={22}/></div>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ fontSize:16, fontWeight:800, color:t.text }}>EGP {h.amount.toLocaleString()}</div>
+                  <div style={{ fontSize:12, color:t.sub, marginTop:2, whiteSpace:"nowrap" as const, overflow:"hidden", textOverflow:"ellipsis" }}>Invested Today · {h.productName}</div>
+                </div>
+                <div style={{ textAlign:"right" as const, flexShrink:0 }}>
+                  <div style={{ fontSize:12, fontWeight:700, color:t.brand }}>+EGP {pr.totalProfit.toLocaleString()}</div>
+                  <div style={{ fontSize:10, color:t.sub, marginTop:1 }}>{h.kind==="fund" ? "if the average holds" : "at maturity"}</div>
+                </div>
+              </div>
+            })}
       </div>
 
       {/* Daily Insight */}
@@ -2162,7 +2258,12 @@ function DailyReviewScreen({ nav }: { nav:(s:Screen)=>void }) {
         <div>
           <div style={{ fontSize:11, fontWeight:800, color:"rgba(255,255,255,0.55)", letterSpacing:1.2, textTransform:"uppercase" as const, marginBottom:6 }}>Your Daily Insight</div>
           <div style={{ fontSize:14, color:"white", lineHeight:1.65, fontWeight:500 }}>
-            You spent most of your money on <span style={{ fontWeight:800, color:t.gold }}>{topCategory}</span> today. You also invested EGP 1,000 — a great step toward your certificate goal!
+            In the sample spending above, <span style={{ fontWeight:800, color:t.gold }}>{topCategory}</span> is the biggest slice.{" "}
+            {investedToday > 0
+              ? `You invested EGP ${investedToday.toLocaleString()} today — that money is now working for you.`
+              : investedTotal > 0
+                ? `You have EGP ${investedTotal.toLocaleString()} invested. Adding to it, even in small amounts, is what moves a goal.`
+                : "You have not invested yet — the Invest tab explains certificates and funds in plain language."}
           </div>
         </div>
       </div>
@@ -2171,14 +2272,8 @@ function DailyReviewScreen({ nav }: { nav:(s:Screen)=>void }) {
 }
 
 // ─── NotificationsScreen ──────────────────────────────────────────────────────
-type NotifType = "reminder"|"certificate"|"growth"
-interface Notif { id:number; type:NotifType; title:string; body:string; time:string; read:boolean }
-
-function NotificationsScreen({ nav }: { nav:(s:Screen)=>void }) {
-  const { t, notifPrefs } = useT()
-  const { holdings, profile } = useApp()
-  const [filter, setFilter] = useState<NotifType|null>(null)
-  const allNotifs: Notif[] = [
+function buildNotifs(holdings:HoldingDoc[], profile:UserProfile|null): Notif[] {
+  return [
     ...(holdings.length === 0
       ? [{ id:1, type:"reminder" as NotifType, title:"Make your first investment", body:"You have not invested yet. The Invest tab walks you through certificates and funds in plain language.", time:"Now", read:false }]
       : holdings.slice(0,3).map((h,i)=>({
@@ -2187,7 +2282,7 @@ function NotificationsScreen({ nav }: { nav:(s:Screen)=>void }) {
           title: h.kind === "fund" ? `${h.productName} update` : `${h.productName} on track`,
           body: h.kind === "fund"
             ? `EGP ${h.amount.toLocaleString()} invested. Fund values move daily — the ~${h.rate}% figure is a historical average, not a promise.`
-            : `EGP ${h.amount.toLocaleString()} at ${h.rate}% fixed${h.maturesAt ? `, maturing ${h.maturesAt}` : ""}. Projected profit: +EGP ${Math.round(h.amount*h.rate/100).toLocaleString()}.`,
+            : `EGP ${h.amount.toLocaleString()} at ${h.rate}% fixed${h.maturesAt ? `, maturing ${h.maturesAt}` : ""}. Projected profit: +EGP ${holdingProgress(h).totalProfit.toLocaleString()}.`,
           time: h.purchasedAt,
           read: i > 0,
         }))),
@@ -2207,7 +2302,13 @@ function NotificationsScreen({ nav }: { nav:(s:Screen)=>void }) {
       time:"Today", read:true,
     }] : []),
   ]
-  const [notifs, setNotifs] = useState(allNotifs)
+}
+
+function NotificationsScreen({ nav }: { nav:(s:Screen)=>void }) {
+  const { t, notifPrefs } = useT()
+  const { holdings, profile } = useApp()
+  const [filter, setFilter] = useState<NotifType|null>(null)
+  const [notifs, setNotifs] = useState(() => buildNotifs(holdings, profile))
   const iconFor=(type:NotifType)=>type==="reminder"?"bell":type==="certificate"?"chart":"trending"
   const colorFor=(type:NotifType)=>type==="reminder"?"#F97316":type==="certificate"?GR:GD
   const bgFor=(type:NotifType)=>type==="reminder"?"#FFF7ED":type==="certificate"?GRL:`${GD}14`
@@ -2675,7 +2776,7 @@ export default function App() {
   const [homeCardGoalId, setHomeCardGoalId] = useState<string|null>(null)
   const [tourReady, setTourReady] = useState(false)
   const [statusLight, setStatusLight] = useState(false)
-  const { isDevice, scale } = useViewport()
+  const { isDevice, scale, frameHeight } = useViewport()
   const frameRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -2700,6 +2801,11 @@ export default function App() {
         if (rollover) {
           p = { ...p, limits: { ...p.limits, remaining:p.limits.cycleCap, resetDate:String(rollover["limits.resetDate"]) } }
           patchProfile(user.uid, rollover).catch(()=>{ /* applied locally regardless */ })
+        }
+        const streak = streakUpdate(p)
+        if (streak) {
+          p = { ...p, stats: { ...p.stats, streakDays: streak["stats.streakDays"] as number, lastActive: streak["stats.lastActive"] as string } }
+          patchProfile(user.uid, streak).catch(()=>{ /* applied locally regardless */ })
         }
         setProfile(p)
         setScreen(p.flags.onboardingComplete ? "home" : "onboarding")
@@ -2876,8 +2982,10 @@ export default function App() {
             // proportional on a 320px SE and a 430px Pro Max alike.
             zoom: isDevice ? scale : 1,
             width: isDevice ? "100%" : 390,
-            height: isDevice ? `calc(100dvh / ${scale})` : 820,
-            maxWidth:"100%",
+            height: isDevice ? `calc(100dvh / ${scale})` : frameHeight,
+            // Landscape hands the app the full long side; capping it keeps the
+            // 390px column proportions instead of stretching them edge to edge.
+            maxWidth: isDevice ? 560 : "100%",
             borderRadius: isDevice ? 0 : 52,
             overflow:"hidden", display:"flex", flexDirection:"column",
             // On a device the page background already paints the gradient; a

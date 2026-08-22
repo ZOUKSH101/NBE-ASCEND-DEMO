@@ -20,7 +20,8 @@ if (!window.crypto) Object.defineProperty(window, "crypto", { value: globalThis.
 
 let VW = 390
 Object.defineProperty(window, "innerWidth", { get: () => VW, configurable: true })
-Object.defineProperty(window, "innerHeight", { value: 844, writable: true })
+let VH = 844
+Object.defineProperty(window, "innerHeight", { get: () => VH, configurable: true })
 window.matchMedia = (q) => ({
   matches: /max-width:\s*560px/.test(q) ? VW <= 560 : false,
   media: q, onchange: null,
@@ -144,7 +145,10 @@ check("triple-click created exactly one holding", holdingCount === 1, `${holding
 // ── VALIDATE THE ARITHMETIC ────────────────────────────────────────────────
 check("Home pill shows the invested total", /EGP 1,000\s*Invested/.test(homeText), (homeText.match(/EGP [\d,]+\s*Invested/)||[""])[0])
 check("points = 75 (goal) + 100 (investment)", /175\s*pts/.test(homeText), (homeText.match(/[\d,]+\s*pts/)||[""])[0])
-check("goal card recomputed: 1,000 of 30,000 = 3%", /3%/.test(homeText) && /EGP 29,000/.test(homeText))
+// The budget typed above was "abc-!!". The card used to fall back to a 30,000
+// target and report progress against it; an unreadable budget now shows none.
+check("unreadable budget invents no target", !/EGP 30,000 target/.test(homeText) && !/EGP 29,000/.test(homeText))
+check("goal card still reports what was invested", /EGP 1,000/.test(homeText), (homeText.match(/EGP [\d,]+ invested/i)||[""])[0])
 
 await click(btnExact("Home"), 350)
 const avatar = [...document.querySelectorAll("div")].find(d =>
@@ -178,6 +182,20 @@ for (const w of [280, 320, 430, 560, 561, 1440, 320]) {
 }
 await settle(400)
 check("survives viewport thrash 280→1440→320", text().length > 200, `${text().length} chars`)
+
+// ── ADVERSARIAL: rotation ─────────────────────────────────────────────
+// The desktop mockup is 820px tall inside an overflow:hidden page — rendering
+// it into a landscape phone put the whole UI out of reach.
+const rotate = async (w, h) => {
+  VW = w; VH = h
+  await act(async () => { window.dispatchEvent(new window.Event("orientationchange")); await new Promise(r => setTimeout(r, 150)) })
+  await settle(300)
+}
+await rotate(844, 390)
+check("landscape phone stays on the device layout", !text().includes("9:41"), text().slice(0, 40))
+await rotate(1440, 900)
+check("roomy desktop still gets the mockup frame", text().includes("9:41"), text().slice(0, 40))
+await rotate(390, 844)
 
 // ── ADVERSARIAL: unmount mid-flight ────────────────────────────────────────
 let crashed = null

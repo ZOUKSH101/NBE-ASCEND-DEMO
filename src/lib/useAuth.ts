@@ -8,11 +8,25 @@ import { auth, firebaseConfigured } from "./firebase"
 export interface SessionUser { uid:string; email:string; displayName:string }
 
 const DEMO_KEY = "nbe:demo-session"
+const DEMO_UID_KEY = "nbe:demo-uid"
+
 const toSession = (u:User): SessionUser => ({
   uid: u.uid,
   email: u.email ?? "",
   displayName: u.displayName ?? (u.email ?? "").split("@")[0],
 })
+
+/** Random and per-browser, never derived from anything the user typed — two
+ *  people entering the same name must not land in the same demo profile. */
+function demoUid(): string {
+  try {
+    const kept = localStorage.getItem(DEMO_UID_KEY)
+    if (kept) return kept
+  } catch { /* ignore */ }
+  const fresh = `demo-${Math.random().toString(36).slice(2,10)}${Date.now().toString(36)}`
+  try { localStorage.setItem(DEMO_UID_KEY, fresh) } catch { /* ignore */ }
+  return fresh
+}
 
 export function friendlyAuthError(code:string): string {
   switch (code) {
@@ -35,7 +49,6 @@ export function useAuth() {
 
   useEffect(()=>{
     if (!firebaseConfigured || !auth) {
-      // Demo mode: restore whatever session localStorage remembers.
       try {
         const raw = localStorage.getItem(DEMO_KEY)
         if (raw) setUser(JSON.parse(raw) as SessionUser)
@@ -46,25 +59,28 @@ export function useAuth() {
     return onAuthStateChanged(auth, u => { setUser(u ? toSession(u) : null); setReady(true) })
   }, [])
 
-  const demoSignIn = useCallback((email:string, displayName:string) => {
-    const session: SessionUser = { uid:`demo-${btoa(email).replace(/=/g,"").slice(0,16)}`, email, displayName }
+  const demoSignIn = useCallback((displayName:string): SessionUser => {
+    const name = displayName.trim() || "Guest"
+    const session: SessionUser = { uid: demoUid(), email:"", displayName: name }
     try { localStorage.setItem(DEMO_KEY, JSON.stringify(session)) } catch { /* ignore */ }
     setUser(session)
     return session
   }, [])
 
   const signIn = useCallback(async (email:string, password:string): Promise<SessionUser> => {
-    if (!firebaseConfigured || !auth) return demoSignIn(email, email.split("@")[0])
+    // No backend means no way to check a password. Accepting one anyway is a
+    // fake login under a bank's name — the demo gate is the only path here.
+    if (!firebaseConfigured || !auth) throw new Error("Sign-in is unavailable in this demo build.")
     const cred = await signInWithEmailAndPassword(auth, email.trim(), password)
     return toSession(cred.user)
-  }, [demoSignIn])
+  }, [])
 
   const signUp = useCallback(async (email:string, password:string, displayName:string): Promise<SessionUser> => {
-    if (!firebaseConfigured || !auth) return demoSignIn(email, displayName)
+    if (!firebaseConfigured || !auth) throw new Error("Account creation is unavailable in this demo build.")
     const cred = await createUserWithEmailAndPassword(auth, email.trim(), password)
     if (displayName) await updateProfile(cred.user, { displayName })
     return { ...toSession(cred.user), displayName: displayName || toSession(cred.user).displayName }
-  }, [demoSignIn])
+  }, [])
 
   const resetPassword = useCallback(async (email:string) => {
     if (!firebaseConfigured || !auth) return
@@ -80,5 +96,5 @@ export function useAuth() {
     await signOut(auth)
   }, [])
 
-  return { user, ready, signIn, signUp, resetPassword, logOut, isDemo: !firebaseConfigured }
+  return { user, ready, signIn, signUp, resetPassword, logOut, demoSignIn, isDemo: !firebaseConfigured }
 }
