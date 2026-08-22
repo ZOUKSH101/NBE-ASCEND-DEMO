@@ -192,9 +192,9 @@ const rotate = async (w, h) => {
   await settle(300)
 }
 await rotate(844, 390)
-check("landscape phone stays on the device layout", !text().includes("9:41"), text().slice(0, 40))
+check("landscape phone renders the app, not a mockup", !text().includes("9:41") && text().length > 200)
 await rotate(1440, 900)
-check("roomy desktop still gets the mockup frame", text().includes("9:41"), text().slice(0, 40))
+check("desktop gets no phone bezel either", !text().includes("9:41") && text().length > 200)
 await rotate(390, 844)
 
 // ── ADVERSARIAL: unmount mid-flight ────────────────────────────────────────

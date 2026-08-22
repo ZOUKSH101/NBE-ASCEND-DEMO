@@ -5,7 +5,7 @@ import { useAuth, friendlyAuthError, type SessionUser } from "./lib/useAuth"
 import { firebaseConfigured } from "./lib/firebase"
 import {
   loadProfile, createProfile, patchProfile, loadGoals, addGoal,
-  loadHoldings, addHolding, describeHoldings, DEFAULT_PROFILE,
+  loadHoldings, addHolding, describeHoldings, DEFAULT_PROFILE, readMirror, mirrorProfile, cycleRollover,
   type UserProfile, type GoalDoc, type HoldingDoc, type TourKey,
 } from "./lib/db"
 import logoImg from "./imports/ChatGPT_Image_Aug_20__2026__12_06_04_PM.png"
@@ -105,6 +105,8 @@ const TR: Record<string,Record<"en"|"ar",string>> = {
   security: { en:"Security",      ar:"الأمان" },
   help:     { en:"Help",          ar:"المساعدة" },
   gmorn:    { en:"Good morning,", ar:"صباح الخير،" },
+  gaft:     { en:"Good afternoon,", ar:"مساء الخير،" },
+  geve:     { en:"Good evening,", ar:"مساء الخير،" },
   balance:  { en:"Total Balance", ar:"إجمالي الرصيد" },
   invest_title: { en:"Available to Invest", ar:"متاح للاستثمار" },
   cur_inv:  { en:"Currently Invested",      ar:"المستثمر حالياً" },
@@ -122,6 +124,128 @@ const TR: Record<string,Record<"en"|"ar",string>> = {
 const tx = (key:string, lang:"en"|"ar") => TR[key]?.[lang] ?? key
 
 type Screen = "login"|"signup"|"forgot"|"onboarding"|"goalsetup"|"home"|"invest"|"learn"|"lesson"|"goals"|"rewards"|"dailyreview"|"notifications"|"profile"|"settings"|"security"|"help"
+
+let localSeq = 0
+/** Date.now() alone collides for records created in the same millisecond. */
+const newLocalId = () => `l${Date.now().toString(36)}${(localSeq++).toString(36)}${Math.random().toString(36).slice(2,6)}`
+
+// ─── Viewport ────────────────────────────────────────────────────────────────
+/** True on a real phone-sized screen — the device frame is dropped there. */
+/** Width the UI was laid out against. Everything scales relative to this. */
+const DESIGN_WIDTH = 390
+
+/** Widest the app column is allowed to get. Past this it would stretch a
+ *  390px layout across a desktop window rather than read as an app. */
+const MAX_WIDTH = 560
+
+const measure = () => {
+  if (typeof window === "undefined") return { scale:1, width:DESIGN_WIDTH }
+  // One layout at every size — there is no desktop mockup to fall back to.
+  const width = Math.min(window.innerWidth, MAX_WIDTH)
+  // 320 (SE) → 0.86, 390 (design) → 1, 430 (Pro Max) → 1.10.
+  const scale = Math.min(Math.max(width / DESIGN_WIDTH, 0.84), 1.14)
+  return { scale: Math.round(scale * 1000) / 1000, width }
+}
+
+function useViewport() {
+  const [vp, setVp] = useState(measure)
+  useEffect(()=>{
+    let frame = 0
+    const on = () => {
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(()=>setVp(measure()))
+    }
+    window.addEventListener("resize", on)
+    window.addEventListener("orientationchange", on)
+    return ()=>{
+      cancelAnimationFrame(frame)
+      window.removeEventListener("resize", on)
+      window.removeEventListener("orientationchange", on)
+    }
+  }, [])
+  return vp
+}
+
+/**
+ * 100dvh is the browser's guess at the visible height: it lags the collapsing
+ * address bar on scroll and ignores the keyboard entirely, so the frame — and
+ * the nav pinned to its bottom — drifted a few pixels at a time. visualViewport
+ * reports the real visible box. Published as CSS vars and returned as the
+ * keyboard overlap so the nav can get out of the way.
+ */
+function useVisualViewport() {
+  const [kbInset, setKbInset] = useState(0)
+  useEffect(()=>{
+    const vv = window.visualViewport
+    if (!vv) return
+    let frame = 0
+    const on = () => {
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(()=>{
+        const overlap = Math.max(0, Math.round(window.innerHeight - (vv.height + vv.offsetTop)))
+        document.documentElement.style.setProperty("--vvh", `${Math.round(vv.height)}px`)
+        document.documentElement.style.setProperty("--kb-inset", `${overlap}px`)
+        setKbInset(overlap)
+      })
+    }
+    on()
+    vv.addEventListener("resize", on)
+    vv.addEventListener("scroll", on)
+    return ()=>{
+      cancelAnimationFrame(frame)
+      vv.removeEventListener("resize", on)
+      vv.removeEventListener("scroll", on)
+    }
+  }, [])
+  return kbInset
+}
+
+// ─── Progression ─────────────────────────────────────────────────────────────
+const LEVEL_NAMES = ["Beginner", "Saver", "Rising Investor", "Confident Investor", "Strategist"]
+const PTS_PER_LEVEL = 1000
+const PTS_GOAL = 75
+const PTS_INVEST = 100
+const PTS_TOUR = 25
+/** Redeem tiles read 100 pts = EGP 10, so the wallet figure must use the same rate. */
+const PTS_PER_EGP = 10
+
+function progression(points:number) {
+  const level = Math.min(LEVEL_NAMES.length, Math.floor(points / PTS_PER_LEVEL) + 1)
+  const nextAt = level * PTS_PER_LEVEL
+  const floor  = (level - 1) * PTS_PER_LEVEL
+  const maxed  = level >= LEVEL_NAMES.length
+  return {
+    level,
+    name: LEVEL_NAMES[level - 1],
+    nextAt,
+    toNext: maxed ? 0 : nextAt - points,
+    pct: maxed ? 100 : Math.round(((points - floor) / PTS_PER_LEVEL) * 100),
+    maxed,
+    cashback: Math.floor(points / PTS_PER_EGP),
+  }
+}
+
+/** Calendar date in the user's own timezone. toISOString() is UTC, which put
+ *  a purchase made after midnight in Cairo on the previous day. */
+const localISO = (d:Date = new Date()) =>
+  new Date(d.getTime() - d.getTimezoneOffset()*60000).toISOString().slice(0,10)
+
+/** The Streak pill read "0 days" forever — nothing ever advanced the counter.
+ *  Consecutive calendar days keep it, one missed day resets it to 1. */
+function streakUpdate(p:UserProfile): Record<string,unknown> | null {
+  const today = localISO()
+  const last = p.stats.lastActive
+  if (last === today) return null
+  const yesterday = localISO(new Date(Date.now() - 86400000))
+  const days = last === yesterday ? (p.stats.streakDays || 0) + 1 : 1
+  return { "stats.streakDays": days, "stats.lastActive": today }
+}
+
+/** The greeting was fixed at "Good morning" whatever the clock said. */
+const greetKey = () => { const h = new Date().getHours(); return h < 12 ? "gmorn" : h < 18 ? "gaft" : "geve" }
+
+/** Years a product runs for, read off its duration label. Funds have none. */
+const termYears = (dur:string) => { const m = dur.match(/(\d+)\s*Year/i); return m ? Number(m[1]) : 1 }
 
 // ─── Primitives ───────────────────────────────────────────────────────────────
 function Ring({ pct, size=60, w=5, color=GR }: { pct:number; size?:number; w?:number; color?:string }) {
@@ -282,7 +406,7 @@ function AuthError({ message }: { message:string|null }) {
 }
 
 function AuthHero({ title, sub }: { title:string; sub:string }) {
-  return <div style={{ background:`linear-gradient(160deg,${GRD},${GR})`, padding:"38px 28px 34px", display:"flex", flexDirection:"column", alignItems:"center", position:"relative", overflow:"hidden" }}>
+  return <div style={{ background:`linear-gradient(160deg,${GRD},${GR})`, padding:"0 28px 34px", paddingTop:"calc(38px + var(--safe-top, 0px))", display:"flex", flexDirection:"column", alignItems:"center", position:"relative", overflow:"hidden" }}>
     <div style={{ position:"absolute", top:-40, right:-40, width:160, height:160, borderRadius:"50%", background:"rgba(255,255,255,0.06)" }}/>
     <div style={{ position:"absolute", bottom:-30, left:-30, width:120, height:120, borderRadius:"50%", background:`${GD}22` }}/>
     <Logo light/>
@@ -410,6 +534,30 @@ function ForgotScreen({ nav, resetPassword }: { nav:(s:Screen)=>void; resetPassw
   </div>
 }
 
+function DemoGate({ demoSignIn }: { demoSignIn:(name:string)=>unknown }) {
+  const { t } = useT()
+  const [name, setName] = useState("")
+  return <div style={{ minHeight:"100%", background:"transparent", display:"flex", flexDirection:"column" }}>
+    <AuthHero title="NBE Youth — Demo" sub="A preview build, not the real app"/>
+    <div style={{ flex:1, padding:"28px 24px 24px", display:"flex", flexDirection:"column", gap:16 }}>
+      <div style={{ background:t.cardAlt, border:`1px solid ${GD}35`, borderRadius:20, padding:"16px 18px", display:"flex", gap:12, alignItems:"flex-start" }}>
+        <Ic n="info" c={t.gold} s={18}/>
+        <div style={{ fontSize:12.5, color:t.text, lineHeight:1.7 }}>
+          This build has no bank connection and no accounts. Nothing you enter is sent anywhere — it is stored only in this browser and disappears when you clear it. Do not enter real banking details.
+        </div>
+      </div>
+      <div>
+        <div style={{ fontSize:12, fontWeight:700, color:t.sub, marginBottom:8 }}>What should we call you?</div>
+        <AuthInput icon="user" placeholder="Your name" value={name} onChange={setName}/>
+      </div>
+      <GreenBtn label="Explore the demo" onClick={()=>demoSignIn(name)}/>
+      <div style={{ fontSize:11, color:t.sub, lineHeight:1.6, textAlign:"center" as const, marginTop:4 }}>
+        Sign-in is disabled in the demo build.
+      </div>
+    </div>
+  </div>
+}
+
 // ─── Onboarding ───────────────────────────────────────────────────────────────
 function IllustTarget() {
   return <svg viewBox="0 0 300 240" width="300" height="240">
@@ -488,7 +636,7 @@ function OnboardingScreen({ onDone, onGoalSetup, onTone }: { onDone:()=>void; on
   const bg = t.dm ? SLIDES_DARK[slide] : s.bg
   useEffect(()=>{ onTone?.(isLight) }, [isLight, onTone])
   return <div style={{ height:"100%", display:"flex", flexDirection:"column", background:bg, transition:"background 0.5s ease" }}>
-    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"14px 22px" }}>
+    <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"0 22px 14px", paddingTop:"calc(14px + var(--safe-top, 0px))" }}>
       <Logo light={isLight}/>
       {slide<2 && <button onClick={onGoalSetup} style={{ fontSize:13, fontWeight:600, color:isLight?"rgba(255,255,255,0.65)":t.sub, background:"none", border:"none", cursor:"pointer" }}>Skip</button>}
     </div>
@@ -520,7 +668,7 @@ function GoalSetupSheet({ onGoalSet }: { onGoalSet:(entry:GoalEntry)=>void }) {
   const chips = ["Laptop", "Car", "Investing"]
   const confirm = () => {
     if (!name.trim()) return
-    onGoalSet({ id: Date.now().toString(), name:name.trim(), budget, start, end, type:"user" })
+    onGoalSet({ id: newLocalId(), name:name.trim(), budget, start, end, type:"user" })
   }
   const inp = (val:string, set:(v:string)=>void, placeholder:string, label:string, type="text") => (
     <div style={{ marginBottom:14 }}>
@@ -554,12 +702,12 @@ function GoalSetupSheet({ onGoalSet }: { onGoalSet:(entry:GoalEntry)=>void }) {
       <div style={{ display:"flex", gap:8, flexWrap:"wrap" as const, marginBottom:18 }}>
         <div style={{ fontSize:11, fontWeight:600, color:t.sub, alignSelf:"center", marginRight:2 }}>Quick pick:</div>
         {chips.map(chip=>(
-          <button key={chip} onClick={()=>setName(chip)} style={{ padding:"8px 18px", borderRadius:999, border:`1.5px solid ${name===chip?GR:`${GD}80`}`, background:name===chip?`${GR}14`:`${GD}10`, color:name===chip?GR:GRD, fontSize:13, fontWeight:700, cursor:"pointer", transition:"all 0.2s" }}>{chip}</button>
+          <button key={chip} onClick={()=>setName(chip)} style={{ padding:"8px 18px", borderRadius:999, border:`1.5px solid ${name===chip?t.brand:`${GD}80`}`, background:name===chip?`${GR}22`:`${GD}18`, color:name===chip?t.brand:t.gold, fontSize:13, fontWeight:700, cursor:"pointer", transition:"all 0.2s" }}>{chip}</button>
         ))}
       </div>
 
       {inp(budget, setBudget, "e.g. EGP 30,000", "BUDGET (TARGET AMOUNT)")}
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:14 }}>
+      <div style={{ display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:10, marginBottom:14 }}>
         <div>
           <div style={{ fontSize:11, fontWeight:700, color:t.sub, marginBottom:6, letterSpacing:0.3 }}>START DATE</div>
           <input type="date" value={start} onChange={e=>setStart(e.target.value)} style={{ width:"100%", border:`1.5px solid ${start?GR:t.stroke}`, borderRadius:999, padding:"12px 14px", fontSize:13, outline:"none", fontFamily:"inherit", color:t.text, boxSizing:"border-box" as const, transition:"border-color 0.2s", background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur }}/>
@@ -577,19 +725,75 @@ function GoalSetupSheet({ onGoalSet }: { onGoalSet:(entry:GoalEntry)=>void }) {
   )
 }
 
+// ─── Product catalogue (module scope: Home quotes it, Invest sells from it) ──
+interface Product { name:string; dur:string; rate:number; min:number; color:string; tag:string; risk:string; access:string }
+
+const CERTS: Product[] = [
+  { name:"Premium Certificate", dur:"1 Year",  rate:25, min:1000,  color:GR,  tag:"MOST POPULAR",  risk:"", access:"No early withdrawal — it runs the full year." },
+  { name:"Growth Certificate",  dur:"3 Years", rate:22, min:5000,  color:GRD, tag:"",              risk:"", access:"No withdrawal before maturity. Interest is paid to your account each year." },
+  { name:"Long-Term Certificate",dur:"5 Years",rate:18, min:10000, color:GD,  tag:"BEST FOR GOALS",risk:"", access:"Partial withdrawal allowed after year 2." },
+]
+const FUNDS: Product[] = [
+  { name:"Money Market Fund",        dur:"Daily Access",  rate:19, min:500,  color:GRD, tag:"CALMEST",       risk:"Low",    access:"Withdraw any business day." },
+  { name:"Balanced Growth Fund",     dur:"2+ Yr Horizon", rate:24, min:2000, color:GR,  tag:"MOST POPULAR",  risk:"Medium", access:"Weekly redemption, subject to notice." },
+  { name:"Equity Opportunities Fund",dur:"3+ Yr Horizon", rate:30, min:3000, color:GD,  tag:"BIGGEST SWINGS",risk:"High",   access:"Weekly redemption, subject to notice." },
+]
+const productByName = (n:string) => [...CERTS, ...FUNDS].find(p => p.name === n) ?? null
+
+type NotifType = "reminder"|"certificate"|"growth"
+interface Notif { id:number; type:NotifType; title:string; body:string; time:string; read:boolean }
+
 // ─── Built-in Goals (defined here so HomeScreen can reference them) ───────────
-interface BuiltinGoal { title:string; icon:string; color:string; pct:number; steps:{label:string;done:boolean}[]; defaultActive:boolean }
+/* Built-in goals evaluate their own steps against the account rather than
+   carrying a fixed percentage, so the ring always reflects real progress. */
+interface GoalCtx {
+  profile: UserProfile | null
+  holdings: HoldingDoc[]
+  goalCount: number
+}
+interface BuiltinStep { label:string; check:(c:GoalCtx)=>boolean }
+interface BuiltinGoal { title:string; icon:string; color:string; steps:BuiltinStep[]; defaultActive:boolean }
+
+const invested   = (c:GoalCtx) => c.holdings.reduce((n,h)=>n+h.amount, 0)
+const points     = (c:GoalCtx) => c.profile?.stats?.points ?? 0
+const toursDone  = (c:GoalCtx) => Object.values(c.profile?.flags?.toursSeen ?? {}).filter(Boolean).length
+const hasKind    = (c:GoalCtx, k:"certificate"|"fund") => c.holdings.some(h=>h.kind===k)
 
 const BUILTIN_GOALS: BuiltinGoal[] = [
-  { title:"Make My First Investment", icon:"trending", color:GR, pct:75, defaultActive:true,
-    steps:[{label:"Complete 3 financial lessons",done:true},{label:"Maintain EGP 5,000 in account",done:true},{label:"Learn about certificates",done:true},{label:"Invest your first EGP 1,000",done:false}] },
-  { title:"Become Credit Card Ready", icon:"credit", color:GD, pct:40, defaultActive:true,
-    steps:[{label:"Complete financial education track",done:true},{label:"Build consistent saving habit",done:true},{label:"Make a responsible investment",done:false},{label:"Maintain account balance for 3 months",done:false},{label:"Pass the credit card readiness quiz",done:false}] },
-  { title:"Become Loan-Ready", icon:"bank", color:GRD, pct:0, defaultActive:false,
-    steps:[{label:"Complete financial education track",done:true},{label:"Build a consistent saving habit",done:true},{label:"Maintain credit card for 6 months",done:false},{label:"Keep debt-to-income ratio below 30%",done:false},{label:"Reach loan eligibility requirements",done:false}] },
-  { title:"Build Emergency Fund", icon:"shield", color:GR, pct:0, defaultActive:false,
-    steps:[{label:"Complete required financial lessons",done:true},{label:"Set a monthly savings target",done:true},{label:"Save EGP 5,000",done:false},{label:"Save EGP 15,000 (3 months expenses)",done:false}] },
+  { title:"Make My First Investment", icon:"trending", color:GR, defaultActive:true, steps:[
+    { label:"Set your first savings goal",                check:c=>!!c.profile?.flags?.firstGoalSet },
+    { label:"Read how certificates and funds work",       check:c=>!!c.profile?.flags?.toursSeen?.invest },
+    { label:"Earn your first 100 points",                 check:c=>points(c) >= 100 },
+    { label:"Invest your first EGP 1,000",                check:c=>c.holdings.some(h=>h.amount >= 1000) },
+  ]},
+  { title:"Become Credit Card Ready", icon:"credit", color:GD, defaultActive:true, steps:[
+    { label:"Set a savings goal",                         check:c=>!!c.profile?.flags?.firstGoalSet },
+    { label:"Finish three app walkthroughs",              check:c=>toursDone(c) >= 3 },
+    { label:"Make your first investment",                 check:c=>c.holdings.length > 0 },
+    { label:"Hold EGP 10,000 invested",                   check:c=>invested(c) >= 10000 },
+    { label:"Reach 500 points",                           check:c=>points(c) >= 500 },
+  ]},
+  { title:"Become Loan-Ready", icon:"bank", color:GRD, defaultActive:false, steps:[
+    { label:"Hold at least one certificate",              check:c=>hasKind(c,"certificate") },
+    { label:"Spread across a certificate and a fund",     check:c=>hasKind(c,"certificate") && hasKind(c,"fund") },
+    { label:"Hold EGP 25,000 invested",                   check:c=>invested(c) >= 25000 },
+    { label:"Keep three or more active holdings",         check:c=>c.holdings.filter(h=>h.status==="active").length >= 3 },
+    { label:"Reach 1,000 points",                         check:c=>points(c) >= 1000 },
+  ]},
+  { title:"Build Emergency Fund", icon:"shield", color:GR, defaultActive:false, steps:[
+    { label:"Set a savings goal",                         check:c=>c.goalCount > 0 },
+    { label:"Put money into an accessible fund",          check:c=>hasKind(c,"fund") },
+    { label:"Save EGP 5,000",                             check:c=>invested(c) >= 5000 },
+    { label:"Save EGP 15,000 (about 3 months of costs)",  check:c=>invested(c) >= 15000 },
+  ]},
 ]
+
+/** Resolve a built-in goal's steps and percentage against the current account. */
+function evalBuiltin(g:BuiltinGoal, ctx:GoalCtx) {
+  const steps = g.steps.map(st => ({ label:st.label, done:st.check(ctx) }))
+  const done = steps.filter(st=>st.done).length
+  return { ...g, steps, done, pct: Math.round((done / steps.length) * 100) }
+}
 
 // ─── HomeScreen ───────────────────────────────────────────────────────────────
 function HomeScreen({ nav, userGoals, builtinActive, homeCardGoalId, setHomeCardGoalId, onStartNewGoal }: {
@@ -600,19 +804,38 @@ function HomeScreen({ nav, userGoals, builtinActive, homeCardGoalId, setHomeCard
   setHomeCardGoalId:(id:string|null)=>void;
   onStartNewGoal:()=>void;
 }) {
-  const { t, lang } = useT()
+  const { t, lang, notifPrefs } = useT()
+  const { profile, holdings } = useApp()
+  const stats = profile?.stats ?? { points:0, level:1, streakDays:0 }
+  const prog = progression(stats.points)
+  const invested = holdings.reduce((n,h)=>n+h.amount, 0)
 
-  const builtinGoalEntries: GoalEntry[] = BUILTIN_GOALS.map((g,i) => ({ id:`builtin-${i}`, name:g.title, budget:"", start:"", end:"", type:"builtin" as const, pct:g.pct })).filter((_,i) => builtinActive[i])
+  const notifEnabled = (n:Notif) => n.type==="reminder" ? notifPrefs.reminders : n.type==="certificate" ? notifPrefs.certs : notifPrefs.growth
+  const unreadNotifs = buildNotifs(holdings, profile).filter(n => !n.read && notifEnabled(n)).length
+
+  const goalCtx: GoalCtx = { profile, holdings, goalCount: userGoals.length }
+  const builtinGoalEntries: GoalEntry[] = BUILTIN_GOALS
+    .map((g,i) => ({ id:`builtin-${i}`, name:g.title, budget:"", start:"", end:"", type:"builtin" as const, pct:evalBuiltin(g, goalCtx).pct }))
+    .filter((_,i) => builtinActive[i])
   const allDisplayGoals: GoalEntry[] = [...userGoals, ...builtinGoalEntries]
 
   const selectedGoal = allDisplayGoals.find(g => g.id === homeCardGoalId) ?? allDisplayGoals[0] ?? null
   const selectedIdx = allDisplayGoals.findIndex(g => g.id === (selectedGoal?.id ?? ""))
   const hasMultiple = allDisplayGoals.length > 1
 
-  const goalPct = selectedGoal?.pct ?? 0
-  const goalSaved = 0
-  const goalBudgetNum = selectedGoal ? (parseInt((selectedGoal.budget||"").replace(/\D/g,""))||30000) : 30000
-  const goalRemaining = goalBudgetNum - goalSaved
+  // A built-in goal is a checklist, not a savings target. Rendering it in the
+  // money layout invented a target (the old 30,000 fallback) and then reported
+  // EGP 0 saved against it while the ring read 50% off completed steps.
+  const builtinDef = selectedGoal?.type === "builtin"
+    ? BUILTIN_GOALS.find(b => b.title === selectedGoal.name) ?? null : null
+  const selectedBuiltin = builtinDef ? evalBuiltin(builtinDef, goalCtx) : null
+  const nextStep = selectedBuiltin?.steps.find(st => !st.done)?.label ?? null
+
+  const goalBudgetNum = selectedGoal ? (parseInt((selectedGoal.budget||"").replace(/\D/g,""))||0) : 0
+  const goalSaved = Math.min(invested, goalBudgetNum || invested)
+  const goalPct = selectedBuiltin ? selectedBuiltin.pct
+    : goalBudgetNum > 0 ? Math.min(100, Math.round((goalSaved / goalBudgetNum) * 100)) : 0
+  const goalRemaining = Math.max(0, goalBudgetNum - goalSaved)
 
   const calcTimeLeft = () => {
     if (!selectedGoal?.end) return "—"
@@ -634,20 +857,20 @@ function HomeScreen({ nav, userGoals, builtinActive, homeCardGoalId, setHomeCard
   }
 
   return <div style={{ background:"transparent", minHeight:"100%" }}>
-    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"12px 20px 16px", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"0 20px 16px", paddingTop:`calc(12px + var(--safe-top, 0px))`, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
       <Logo/>
       <div style={{ display:"flex", gap:10, alignItems:"center" }}>
         <button onClick={()=>nav("notifications")} style={{ width:38, height:38, borderRadius:19, background:t.chip, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, display:"flex", alignItems:"center", justifyContent:"center", border:"none", cursor:"pointer", position:"relative" }}>
           <Ic n="bell" c={t.text} s={18}/>
-          <div style={{ position:"absolute", top:8, right:8, width:8, height:8, borderRadius:4, background:ERR, border:"1.5px solid white" }}/>
+          {unreadNotifs > 0 && <div style={{ position:"absolute", top:8, right:8, width:8, height:8, borderRadius:4, background:ERR, border:"1.5px solid white" }}/>}
         </button>
-        <div onClick={()=>nav("profile")} style={{ width:38, height:38, borderRadius:19, background:`linear-gradient(135deg,${GR},${GRD})`, display:"flex", alignItems:"center", justifyContent:"center", color:"white", fontSize:13, fontWeight:800, cursor:"pointer" }}>LM</div>
+        <div onClick={()=>nav("profile")} style={{ width:38, height:38, borderRadius:19, background:`linear-gradient(135deg,${GR},${GRD})`, display:"flex", alignItems:"center", justifyContent:"center", color:"white", fontSize:13, fontWeight:800, cursor:"pointer" }}>{profile?.initials ?? "NB"}</div>
       </div>
     </div>
 
     <div style={{ padding:"14px 20px 0" }}>
-      <div style={{ fontSize:13, color:t.sub }}>{tx("gmorn",lang)}</div>
-      <div style={{ fontSize:20, fontWeight:800, color:t.text, marginTop:2 }}>Lara Mahrous</div>
+      <div style={{ fontSize:13, color:t.sub }}>{tx(greetKey(),lang)}</div>
+      <div style={{ fontSize:20, fontWeight:800, color:t.text, marginTop:2, whiteSpace:"nowrap" as const, overflow:"hidden", textOverflow:"ellipsis" }}>{profile?.displayName ?? "there"}</div>
     </div>
 
     {/* Goal card */}
@@ -688,10 +911,16 @@ function HomeScreen({ nav, userGoals, builtinActive, homeCardGoalId, setHomeCard
                   <span style={{ fontSize:13, fontWeight:800, color:"white" }}>{goalPct}%</span>
                 </div>
               </div>
-              <div style={{ flex:1 }}>
-                <div style={{ fontSize:11, color:"rgba(255,255,255,0.55)", marginBottom:4 }}>Saved so far</div>
-                <div style={{ fontSize:22, fontWeight:800, letterSpacing:-0.5 }}>EGP {goalSaved.toLocaleString()}</div>
-                <div style={{ fontSize:11, color:"rgba(255,255,255,0.55)", marginTop:2 }}>of {selectedGoal!.budget || "EGP " + goalBudgetNum.toLocaleString()} target</div>
+              <div style={{ flex:1, minWidth:0 }}>
+                {selectedBuiltin ? <>
+                  <div style={{ fontSize:11, color:"rgba(255,255,255,0.55)", marginBottom:4 }}>Milestones done</div>
+                  <div style={{ fontSize:22, fontWeight:800, letterSpacing:-0.5 }}>{selectedBuiltin.done} of {selectedBuiltin.steps.length}</div>
+                  <div style={{ fontSize:11, color:"rgba(255,255,255,0.55)", marginTop:2, lineHeight:1.4 }}>{nextStep ? `Next: ${nextStep}` : "All steps complete"}</div>
+                </> : <>
+                  <div style={{ fontSize:11, color:"rgba(255,255,255,0.55)", marginBottom:4 }}>Saved so far</div>
+                  <div style={{ fontSize:22, fontWeight:800, letterSpacing:-0.5 }}>EGP {goalSaved.toLocaleString()}</div>
+                  <div style={{ fontSize:11, color:"rgba(255,255,255,0.55)", marginTop:2 }}>{goalBudgetNum > 0 ? `of EGP ${goalBudgetNum.toLocaleString()} target` : "No target amount set"}</div>
+                </>}
               </div>
             </div>
             <div style={{ marginBottom:14 }}>
@@ -699,19 +928,23 @@ function HomeScreen({ nav, userGoals, builtinActive, homeCardGoalId, setHomeCard
                 <div style={{ width:`${goalPct}%`, height:6, background:`linear-gradient(90deg,${GD},${GDS})`, borderRadius:6, transition:"width 0.6s ease" }}/>
               </div>
               <div style={{ display:"flex", justifyContent:"space-between", marginTop:4 }}>
-                <span style={{ fontSize:10, color:"rgba(255,255,255,0.45)" }}>EGP 0 saved</span>
-                <span style={{ fontSize:10, color:"rgba(255,255,255,0.45)" }}>{selectedGoal!.budget || "EGP " + goalBudgetNum.toLocaleString()} goal</span>
+                <span style={{ fontSize:10, color:"rgba(255,255,255,0.45)" }}>{selectedBuiltin ? `${selectedBuiltin.done} done` : `EGP ${goalSaved.toLocaleString()} saved`}</span>
+                <span style={{ fontSize:10, color:"rgba(255,255,255,0.45)" }}>{selectedBuiltin ? `${selectedBuiltin.steps.length} milestones` : goalBudgetNum > 0 ? `EGP ${goalBudgetNum.toLocaleString()} goal` : "no target"}</span>
               </div>
             </div>
             <div style={{ display:"flex", borderTop:"1px solid rgba(255,255,255,0.12)", paddingTop:14, gap:12 }}>
               <div style={{ flex:1 }}>
-                <div style={{ fontSize:10, color:"rgba(255,255,255,0.45)" }}>Still Needed</div>
-                <div style={{ fontSize:15, fontWeight:800, color:t.gold, marginTop:3 }}>EGP {goalRemaining.toLocaleString()}</div>
+                <div style={{ fontSize:10, color:"rgba(255,255,255,0.45)" }}>{selectedBuiltin ? "Steps Left" : "Still Needed"}</div>
+                <div style={{ fontSize:15, fontWeight:800, color:t.gold, marginTop:3 }}>
+                  {selectedBuiltin ? `${selectedBuiltin.steps.length - selectedBuiltin.done}` : goalBudgetNum > 0 ? `EGP ${goalRemaining.toLocaleString()}` : "—"}
+                </div>
               </div>
               <div style={{ width:1, background:"rgba(255,255,255,0.12)" }}/>
               <div style={{ flex:1 }}>
-                <div style={{ fontSize:10, color:"rgba(255,255,255,0.45)" }}>Time Left</div>
-                <div style={{ fontSize:15, fontWeight:800, color:"#4ADE80", marginTop:3 }}>{calcTimeLeft()}</div>
+                <div style={{ fontSize:10, color:"rgba(255,255,255,0.45)" }}>{selectedBuiltin ? "Invested" : "Time Left"}</div>
+                <div style={{ fontSize:15, fontWeight:800, color:"#4ADE80", marginTop:3 }}>
+                  {selectedBuiltin ? `EGP ${invested.toLocaleString()}` : calcTimeLeft()}
+                </div>
               </div>
             </div>
           </>
@@ -723,7 +956,7 @@ function HomeScreen({ nav, userGoals, builtinActive, homeCardGoalId, setHomeCard
     <div id="tut-home-tips" style={{ margin:"14px 16px 0" }}>
       <div style={{ fontSize:11, fontWeight:800, color:t.sub, letterSpacing:1.2, textTransform:"uppercase" as const, marginBottom:10 }}>Tips to Reach Your Goal</div>
       {([
-        { icon:"chart",   color:t.brand,  title:"Invest monthly",    tip:"Put EGP 500/month into a Premium Certificate — earn 25% annual return guaranteed by CBE." },
+        { icon:"chart",   color:t.brand,  title:"Start with a certificate", tip:`${CERTS[0].name}: from EGP ${CERTS[0].min.toLocaleString()}, ${CERTS[0].rate}% a year fixed for ${CERTS[0].dur.toLowerCase()}.` },
         { icon:"wallet",  color:t.gold,  title:"Save 20% weekly",   tip:"Set aside 20% of your allowance every week. Small habits build into big balances over time." },
         { icon:"list",    color:t.brand, title:"Review your spending", tip:"Use Daily Review to spot where your money goes and find savings opportunities each day." },
       ]).map((item,i)=>(
@@ -738,17 +971,48 @@ function HomeScreen({ nav, userGoals, builtinActive, homeCardGoalId, setHomeCard
     </div>
 
     {/* Stat pills */}
-    <div style={{ display:"flex", gap:8, padding:"12px 16px 0", overflowX:"auto" as const }}>
-      {([{icon:"refresh",val:"7 days",label:"Streak",color:"#F97316"},{icon:"award",val:"2,450 pts",label:"Points",color:GD},{icon:"trending",val:"Level 3",label:"Rising Investor",color:t.brand}]).map(st=>(
-        <div key={st.label} style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, border:`1px solid ${t.stroke}`, borderRadius:16, padding:"10px 14px", flexShrink:0, boxShadow:`0 1px 4px rgba(0,0,0,${t.dm?0.2:0.06})`, display:"flex", gap:8, alignItems:"center" }}>
+    <div style={{ display:"grid", gridTemplateColumns:"repeat(2, minmax(0, 1fr))", gap:8, padding:"12px 16px 0" }}>
+      {([
+        {icon:"refresh",val:`${stats.streakDays} ${stats.streakDays===1?"day":"days"}`,label:"Streak",color:"#F97316"},
+        {icon:"award",val:`${stats.points.toLocaleString()} pts`,label:"Points",color:GD},
+        {icon:"trending",val:`Level ${prog.level}`,label:prog.name,color:t.brand},
+        {icon:"wallet",val:`EGP ${invested.toLocaleString()}`,label:holdings.length===1?"Invested":`Invested · ${holdings.length}`,color:t.brand},
+      ]).map(st=>(
+        <div key={st.label} style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, border:`1px solid ${t.stroke}`, borderRadius:16, padding:"10px 12px", minWidth:0, boxShadow:`0 1px 4px rgba(0,0,0,${t.dm?0.2:0.06})`, display:"flex", gap:8, alignItems:"center" }}>
           <Ic n={st.icon} c={st.color} s={15}/>
-          <div><div style={{ fontSize:13, fontWeight:700, color:t.text }}>{st.val}</div><div style={{ fontSize:10, color:t.sub }}>{st.label}</div></div>
+          <div style={{ minWidth:0 }}><div style={{ fontSize:13, fontWeight:700, color:t.text, whiteSpace:"nowrap" as const, overflow:"hidden", textOverflow:"ellipsis" }}>{st.val}</div><div style={{ fontSize:10, color:t.sub, whiteSpace:"nowrap" as const, overflow:"hidden", textOverflow:"ellipsis" }}>{st.label}</div></div>
         </div>
       ))}
     </div>
 
+    {/* Your investments */}
+    {holdings.length > 0 && <div style={{ padding:"18px 16px 0" }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 }}>
+        <span style={{ fontSize:15, fontWeight:700, color:t.text }}>Your Investments</span>
+        <button onClick={()=>nav("invest")} style={{ fontSize:12.5, color:t.brand, fontWeight:700, background:"none", border:"none", cursor:"pointer", fontFamily:"inherit" }}>Add more →</button>
+      </div>
+      {holdings.map(h=>(
+        <div key={h.id} style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, border:`1px solid ${t.stroke}`, borderRadius:18, padding:"14px 16px", marginBottom:9, display:"flex", alignItems:"center", gap:13 }}>
+          <div style={{ width:40, height:40, borderRadius:20, background:h.kind==="fund"?`${GD}22`:`${GR}22`, border:`1px solid ${h.kind==="fund"?GD:GR}38`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+            <Ic n={h.kind==="fund"?"trending":"shield"} c={h.kind==="fund"?t.gold:t.brand} s={18}/>
+          </div>
+          <div style={{ flex:1, minWidth:0 }}>
+            <div style={{ fontSize:13.5, fontWeight:700, color:t.text, whiteSpace:"nowrap" as const, overflow:"hidden", textOverflow:"ellipsis" }}>{h.productName}</div>
+            <div style={{ fontSize:11.5, color:t.sub, marginTop:2 }}>
+              {h.kind==="fund" ? `~${h.rate}% avg` : `${h.rate}% fixed`} · {h.term}
+              {h.maturesAt ? ` · matures ${h.maturesAt}` : ""}
+            </div>
+          </div>
+          <div style={{ textAlign:"right" as const, flexShrink:0 }}>
+            <div style={{ fontSize:14, fontWeight:800, color:t.text }}>EGP {h.amount.toLocaleString()}</div>
+            <div style={{ fontSize:10, color:t.sub, marginTop:2 }}>{h.status}</div>
+          </div>
+        </div>
+      ))}
+    </div>}
+
     {/* Quick actions */}
-    <div id="tut-home-actions" style={{ display:"grid", gridTemplateColumns:"repeat(3, 1fr)", gap:10, margin:"14px 16px 0" }}>
+    <div id="tut-home-actions" style={{ display:"grid", gridTemplateColumns:"repeat(3, minmax(0,1fr))", gap:10, margin:"14px 16px 0" }}>
       {([{icon:"chart",label:tx("invest",lang),screen:"invest"as Screen,color:GR},{icon:"target",label:tx("goals",lang),screen:"goals"as Screen,color:t.brand},{icon:"list",label:"Daily Review",screen:"dailyreview"as Screen,color:t.brand}]).map(a=>(
         <button key={a.label} onClick={()=>nav(a.screen)} style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, border:"none", borderRadius:999, padding:"13px 6px", display:"flex", flexDirection:"column", alignItems:"center", gap:7, cursor:"pointer", boxShadow:`0 2px 8px rgba(0,0,0,${t.dm?0.2:0.06})` }}>
           <div style={{ width:42, height:42, borderRadius:12, background:`${a.color}${t.dm?"22":"14"}`, display:"flex", alignItems:"center", justifyContent:"center" }}><Ic n={a.icon} c={a.color} s={20}/></div>
@@ -781,7 +1045,7 @@ function HomeScreen({ nav, userGoals, builtinActive, homeCardGoalId, setHomeCard
                 <div style={{ position:"absolute", inset:0, display:"flex", alignItems:"center", justifyContent:"center" }}><Ic n={icon} c={color} s={18}/></div>
               </div>
               <div style={{ flex:1 }}>
-                <div style={{ fontSize:14, fontWeight:700, color:t.text, marginBottom:3 }}>{g.name}</div>
+                <div style={{ fontSize:14, fontWeight:700, color:t.text, marginBottom:3, whiteSpace:"nowrap" as const, overflow:"hidden", textOverflow:"ellipsis" }}>{g.name}</div>
                 <div style={{ fontSize:12, color:t.sub, marginBottom:7 }}>{g.budget ? `Target: ${g.budget}` : g.type==="builtin" ? `${pct}% complete` : "No budget set"}</div>
                 <Bar pct={pct} color={color} h={4} trackColor={t.track}/>
               </div>
@@ -809,19 +1073,28 @@ function SubscribeSheet({ product, isFund, onClose }: {
   const [step, setStep] = useState<"amount"|"review"|"done">("amount")
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string|null>(null)
+  const submitting = useRef(false)
 
-  const remaining = profile?.limits.remaining ?? 0
-  const value = Number(amount.replace(/[^\d]/g, "")) || 0
-  const profit = Math.round(value * product.rate / 100)
+  const remaining = profile?.limits?.remaining ?? 0
+  const raw = amount.trim()
+  // Digits only. Stripping non-digits silently turned "-5000" into 5000.
+  const wellFormed = /^\d+$/.test(raw)
+  const value = wellFormed ? Number(raw) : NaN
+  const profit = Number.isFinite(value) ? Math.round(value * product.rate / 100) : 0
 
   const validate = () => {
+    if (!wellFormed || !Number.isFinite(value)) return "Enter the amount in whole Egyptian pounds, digits only."
     if (value < product.min) return `Minimum for ${product.name} is EGP ${product.min.toLocaleString()}.`
     if (value > remaining)   return `That is over your remaining limit of EGP ${remaining.toLocaleString()}. Invest the remainder now, or schedule the balance next cycle.`
     return null
   }
 
   const confirm = async () => {
-    if (busy) return
+    // A ref, not state: three clicks in one tick all read the same stale state.
+    if (submitting.current) return
+    const problem = validate()
+    if (problem) { setErr(problem); setStep("amount"); return }
+    submitting.current = true
     setBusy(true); setErr(null)
     try {
       const today = new Date()
@@ -834,17 +1107,20 @@ function SubscribeSheet({ product, isFund, onClose }: {
         rate: product.rate,
         term: product.dur,
         status: "active",
-        purchasedAt: today.toISOString().slice(0,10),
-        ...(matures ? { maturesAt: matures.toISOString().slice(0,10) } : {}),
+        purchasedAt: localISO(today),
+        ...(matures ? { maturesAt: localISO(matures) } : {}),
       })
       patch({
         "limits.remaining": Math.max(0, remaining - value),
         "flags.hasSubscribed": true,
         "flags.funnelStage": "first_subscription",
+        "stats.points": (profile?.stats?.points ?? 0) + PTS_INVEST,
+        "stats.level": progression((profile?.stats?.points ?? 0) + PTS_INVEST).level,
       })
       setStep("done")
     } catch {
       setErr("Could not complete the subscription. Check your connection and try again.")
+      submitting.current = false
     } finally { setBusy(false) }
   }
 
@@ -887,7 +1163,12 @@ function SubscribeSheet({ product, isFund, onClose }: {
           ))}
         </div>
 
-        {err && <div style={{ background:`${ERR}16`, border:`1px solid ${ERR}44`, borderRadius:16, padding:"12px 14px", marginBottom:14, fontSize:12.5, color:t.text, lineHeight:1.6 }}>{err}</div>}
+        {err && <div style={{ background:`${ERR}16`, border:`1px solid ${ERR}44`, borderRadius:16, padding:"12px 14px", marginBottom:14, fontSize:12.5, color:t.text, lineHeight:1.6 }}>
+          {err}
+          {remaining === 0 && <div style={{ color:t.sub, marginTop:7 }}>
+            Youth accounts have a cap on how much can be committed per cycle. Yours refills to EGP {(profile?.limits?.cycleCap ?? 0).toLocaleString()} on {profile?.limits?.resetDate ?? "the next cycle"}.
+          </div>}
+        </div>}
 
         <div style={{ display:"flex", gap:10 }}>
           <button onClick={onClose} style={{ padding:"14px 20px", borderRadius:999, border:`1px solid ${t.border}`, background:"transparent", color:t.sub, fontSize:14, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }}>Cancel</button>
@@ -904,7 +1185,7 @@ function SubscribeSheet({ product, isFund, onClose }: {
           [isFund?"Average return":"Interest rate", `${product.rate}% per year`],
           [isFund?"Suggested horizon":"Duration", product.dur],
           [isFund?"Estimated first-year gain":"Profit at maturity", `EGP ${profit.toLocaleString()}`],
-          ["Limit after this", `EGP ${Math.max(0, remaining-value).toLocaleString()}`],
+          ["Limit after this", `EGP ${Math.max(0, remaining - (Number.isFinite(value) ? value : 0)).toLocaleString()}`],
         ].map(([k,v],i,a)=>(
           <div key={k} style={{ display:"flex", justifyContent:"space-between", gap:12, padding:"11px 0", borderBottom:i<a.length-1?`1px solid ${t.border}`:"none" }}>
             <span style={{ fontSize:12.5, color:t.sub }}>{k}</span>
@@ -935,7 +1216,7 @@ function SubscribeSheet({ product, isFund, onClose }: {
         </div>
         <div style={{ fontSize:19, fontWeight:800, color:t.text, marginBottom:8 }}>Subscription added</div>
         <div style={{ fontSize:13, color:t.sub, lineHeight:1.7, marginBottom:22 }}>
-          EGP {value.toLocaleString()} in {product.name}. It now appears in your holdings, and Acsend can see it when you ask for advice.
+          EGP {(Number.isFinite(value) ? value : 0).toLocaleString()} in {product.name}. It now appears in your holdings, and Acsend can see it when you ask for advice.
         </div>
         <button onClick={onClose} style={{ width:"100%", padding:"15px", borderRadius:999, border:"none", background:`linear-gradient(135deg,${GR},${GRD})`, color:"white", fontSize:14.5, fontWeight:700, cursor:"pointer", boxShadow:`0 8px 22px ${GR}45`, fontFamily:"inherit" }}>Done</button>
       </div>}
@@ -956,7 +1237,7 @@ const CERT_DETAILS = [
     benefits:[{label:"Interest Rate",value:"22% per year — fixed"},{label:"Capital Protection",value:"Full protection of your deposit"},{label:"Periodic Interest",value:"Paid annually to your account"},{label:"Long-term Growth",value:"High total return over 3 years"},{label:"Best For",value:"Medium-term financial goals"}],
   },
   {
-    about:"The Long-Term Certificate is for ambitious savers who can commit for 5 years. At 18% annually the compounded total is significant, with partial access allowed after year 2.",
+    about:"The Long-Term Certificate is for ambitious savers who can commit for 5 years. At 18% a year the total interest is significant, with partial access allowed after year 2.",
     conditions:[{label:"Eligibility",value:"NBE account holders aged 16+"},{label:"Minimum Amount",value:"EGP 10,000"},{label:"Duration",value:"5 Years"},{label:"Currency",value:"Egyptian Pound (EGP)"},{label:"Withdrawal",value:"Partial withdrawal allowed after year 2"}],
     benefits:[{label:"Interest Rate",value:"18% per year — fixed"},{label:"Flexible Withdrawal",value:"Partial access after 2 years"},{label:"Capital Protection",value:"100% guaranteed"},{label:"Wealth Building",value:"Maximum long-term value"},{label:"Best For",value:"Long-term life goals"}],
   },
@@ -980,8 +1261,23 @@ const FUND_DETAILS = [
   },
 ]
 
+/** Where a holding stands today: elapsed term, value accrued, what is due. */
+function holdingProgress(h:HoldingDoc) {
+  const start = new Date(h.purchasedAt).getTime()
+  const now   = Date.now()
+  const end   = h.maturesAt ? new Date(h.maturesAt).getTime() : 0
+  const years = end ? (end - start) / 31_557_600_000 : 1
+  const elapsedYears = Math.max(0, (now - start) / 31_557_600_000)
+  const pct = end ? Math.min(100, Math.max(0, Math.round(((now - start) / (end - start)) * 100))) : null
+  const totalProfit = Math.round(h.amount * (h.rate / 100) * (years || 1))
+  const accrued = Math.round(h.amount * (h.rate / 100) * Math.min(elapsedYears, years || elapsedYears))
+  const daysLeft = end ? Math.max(0, Math.ceil((end - now) / 86_400_000)) : null
+  return { pct, totalProfit, accrued, daysLeft, atMaturity: h.amount + totalProfit, years }
+}
+
 function InvestScreen() {
   const { t } = useT()
+  const { holdings } = useApp()
   const [productType, setProductType] = useState<"certs"|"funds">("certs")
   const [amount, setAmount] = useState(10000)
   const [selected, setSelected] = useState(0)
@@ -989,21 +1285,20 @@ function InvestScreen() {
   const [explainer, setExplainer] = useState(false)
   const [buying, setBuying] = useState(false)
 
-  const certs = [
-    { name:"Premium Certificate", dur:"1 Year",  rate:25, min:1000,  color:GR,  tag:"MOST POPULAR", risk:"" },
-    { name:"Growth Certificate",  dur:"3 Years", rate:22, min:5000,  color:GRD, tag:"", risk:"" },
-    { name:"Long-Term Certificate",dur:"5 Years",rate:18, min:10000, color:GD,  tag:"BEST FOR GOALS", risk:"" },
-  ]
-  const funds = [
-    { name:"Money Market Fund",        dur:"Daily Access",  rate:19, min:500,  color:GRD, tag:"CALMEST", risk:"Low" },
-    { name:"Balanced Growth Fund",     dur:"2+ Yr Horizon", rate:24, min:2000, color:GR,  tag:"MOST POPULAR", risk:"Medium" },
-    { name:"Equity Opportunities Fund",dur:"3+ Yr Horizon", rate:30, min:3000, color:GD,  tag:"BIGGEST SWINGS", risk:"High" },
-  ]
+  const certs = CERTS
+  const funds = FUNDS
+  const owned = holdings.filter(h => h.kind === (productType==="funds" ? "fund" : "certificate"))
+  const ownedTotal = owned.reduce((n,h)=>n+h.amount, 0)
+  const ownedProjected = owned.reduce((n,h)=>n + holdingProgress(h).atMaturity, 0)
   const isFund = productType==="funds"
   const products = isFund ? funds : certs
   const details  = isFund ? FUND_DETAILS : CERT_DETAILS
   const switchType = (p:"certs"|"funds") => { setProductType(p); setSelected(0); setLearnMore(null) }
-  const cert = products[selected], profit = amount*cert.rate/100, total = amount+profit
+  const cert = products[selected]
+  // A 5-year certificate pays five years of interest; the old figure showed one
+  // year's under a "Total After 5 Years" label.
+  const calcYears = isFund ? 1 : termYears(cert.dur)
+  const profit = Math.round(amount*cert.rate/100*calcYears), total = amount+profit
   const glass = { background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, border:`1px solid ${t.stroke}`, boxShadow:t.shadow }
 
   // ── Plain-language explainer ──
@@ -1016,7 +1311,7 @@ function InvestScreen() {
       { label:"Who decides what to buy", cert:"Nobody — the rate is fixed, there is nothing to decide.", fund:"NBE fund managers choose and adjust what the fund holds." },
     ]
     return <div style={{ background:"transparent", minHeight:"100%" }}>
-      <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"14px 20px 16px" }}>
+      <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"0 20px 16px", paddingTop:`calc(14px + var(--safe-top, 0px))` }}>
         <div style={{ display:"flex", alignItems:"center", gap:12 }}>
           <button onClick={()=>setExplainer(false)} style={{ width:36, height:36, borderRadius:999, background:t.chip, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, border:`1px solid ${t.stroke}`, display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", flexShrink:0 }}><Ic n="left" c={t.text} s={18}/></button>
           <div><div style={{ fontSize:17, fontWeight:800, color:t.text }}>Certificates vs Funds</div><div style={{ fontSize:12, color:t.sub }}>The difference, in plain words</div></div>
@@ -1056,7 +1351,7 @@ function InvestScreen() {
   if (learnMore !== null) {
     const lc = products[learnMore], ld = details[learnMore]
     return <div style={{ background:"transparent", minHeight:"100%" }}>
-      <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"14px 20px 16px" }}>
+      <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"0 20px 16px", paddingTop:`calc(14px + var(--safe-top, 0px))` }}>
         <div style={{ display:"flex", alignItems:"center", gap:12 }}>
           <button onClick={()=>setLearnMore(null)} style={{ width:36, height:36, borderRadius:999, background:t.chip, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, border:`1px solid ${t.stroke}`, display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", flexShrink:0 }}><Ic n="left" c={t.text} s={18}/></button>
           <div><div style={{ fontSize:17, fontWeight:800, color:t.text }}>{lc.name}</div><div style={{ fontSize:12, color:t.sub }}>{lc.dur} · {lc.rate}% {isFund?"avg/year":"per year"}</div></div>
@@ -1105,7 +1400,7 @@ function InvestScreen() {
 
   // ── List ──
   return <div style={{ background:"transparent", minHeight:"100%", position:"relative" }}>
-    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"16px 20px 18px" }}>
+    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"0 20px 18px", paddingTop:`calc(16px + var(--safe-top, 0px))` }}>
       <div style={{ fontSize:22, fontWeight:800, color:t.text, letterSpacing:-0.5 }}>Invest</div>
       <div style={{ fontSize:13, color:t.sub, marginTop:2 }}>Grow your money with NBE</div>
     </div>
@@ -1117,16 +1412,76 @@ function InvestScreen() {
         ))}
       </div>
 
-      <button id="tut-invest-explainer" onClick={()=>setExplainer(true)} style={{ width:"100%", ...glass, borderRadius:20, padding:"14px 16px", display:"flex", alignItems:"center", gap:12, cursor:"pointer", marginBottom:16, textAlign:"left" as const, fontFamily:"inherit" }}>
+      {!owned.length && <button id="tut-invest-explainer" onClick={()=>setExplainer(true)} style={{ width:"100%", ...glass, borderRadius:20, padding:"14px 16px", display:"flex", alignItems:"center", gap:12, cursor:"pointer", marginBottom:16, textAlign:"left" as const, fontFamily:"inherit" }}>
         <div style={{ width:38, height:38, borderRadius:19, background:t.cardAlt, border:`1px solid ${t.stroke}`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}><Ic n="help" c={t.brand} s={18}/></div>
         <div style={{ flex:1 }}>
           <div style={{ fontSize:13, fontWeight:800, color:t.text }}>Not sure which is which?</div>
           <div style={{ fontSize:11.5, color:t.sub, marginTop:2 }}>Certificates vs funds, explained in plain words</div>
         </div>
         <Ic n="right" c={t.sub} s={16}/>
-      </button>
+      </button>}
 
-      <div style={{ ...glass, borderRadius:22, padding:"18px", marginBottom:16 }} key={productType+"-how"}>
+      {owned.length > 0 && <div style={{ ...glass, borderRadius:22, padding:"18px", marginBottom:16 }} key={productType+"-track"}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:4 }}>
+          <div style={{ fontSize:14, fontWeight:800, color:t.text }}>
+            Your {isFund ? "funds" : "certificates"}
+          </div>
+          <button onClick={()=>setExplainer(true)} style={{ fontSize:11.5, color:t.sub, fontWeight:600, background:"none", border:"none", cursor:"pointer", fontFamily:"inherit", textDecoration:"underline" }}>
+            Remind me how these work
+          </button>
+        </div>
+        <div style={{ fontSize:12, color:t.sub, marginBottom:16 }}>
+          EGP {ownedTotal.toLocaleString()} across {owned.length} {owned.length===1?"holding":"holdings"}
+          {isFund ? " · value moves daily" : ` · EGP ${ownedProjected.toLocaleString()} at maturity`}
+        </div>
+
+        {owned.map(h=>{
+          const pr = holdingProgress(h)
+          return <div key={h.id} style={{ background:t.cardAlt, border:`1px solid ${t.stroke}`, borderRadius:18, padding:"15px 16px", marginBottom:10 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:10, marginBottom:12 }}>
+              <div style={{ minWidth:0 }}>
+                <div style={{ fontSize:13.5, fontWeight:700, color:t.text, whiteSpace:"nowrap" as const, overflow:"hidden", textOverflow:"ellipsis" }}>{h.productName}</div>
+                <div style={{ fontSize:11.5, color:t.sub, marginTop:2 }}>
+                  Bought {h.purchasedAt} · {isFund ? `~${h.rate}% avg` : `${h.rate}% fixed`}
+                </div>
+              </div>
+              <div style={{ textAlign:"right" as const, flexShrink:0 }}>
+                <div style={{ fontSize:15, fontWeight:800, color:t.text }}>EGP {h.amount.toLocaleString()}</div>
+                <div style={{ fontSize:10, color:t.sub, marginTop:2 }}>invested</div>
+              </div>
+            </div>
+
+            {pr.pct !== null && <div style={{ marginBottom:12 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", fontSize:10.5, color:t.sub, marginBottom:5 }}>
+                <span>{pr.pct}% through the term</span>
+                <span>{pr.daysLeft === 0 ? "Matured" : `${pr.daysLeft} days left`}</span>
+              </div>
+              <Bar pct={pr.pct} color={productByName(h.productName)?.color ?? cert.color} h={5}/>
+            </div>}
+
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(2, minmax(0,1fr))", gap:9 }}>
+              <div style={{ background:t.chip, border:`1px solid ${t.stroke}`, borderRadius:14, padding:"10px 12px" }}>
+                <div style={{ fontSize:10, color:t.sub }}>{isFund ? "Estimated gain so far" : "Interest earned so far"}</div>
+                <div style={{ fontSize:15, fontWeight:800, color:t.brand, marginTop:3 }}>+EGP {pr.accrued.toLocaleString()}</div>
+              </div>
+              <div style={{ background:t.chip, border:`1px solid ${t.stroke}`, borderRadius:14, padding:"10px 12px" }}>
+                <div style={{ fontSize:10, color:t.sub }}>{isFund ? "If the average holds (1 yr)" : "Value at maturity"}</div>
+                <div style={{ fontSize:15, fontWeight:800, color:t.gold, marginTop:3 }}>EGP {pr.atMaturity.toLocaleString()}</div>
+              </div>
+            </div>
+
+            <div style={{ fontSize:11, color:t.sub, marginTop:11, lineHeight:1.6 }}>
+              {isFund
+                ? "Funds have no maturity date and no fixed rate — these figures are an estimate from the historical average, and the real value moves every day."
+                : h.maturesAt
+                  ? `Pays out on ${h.maturesAt}. ${productByName(h.productName)?.access ?? ""}`
+                  : "No maturity date recorded."}
+            </div>
+          </div>
+        })}
+      </div>}
+
+      {!owned.length && <div style={{ ...glass, borderRadius:22, padding:"18px", marginBottom:16 }} key={productType+"-how"}>
         <div style={{ display:"flex", alignItems:"center", gap:9, marginBottom:12 }}>
           <div style={{ width:32, height:32, borderRadius:11, background:isFund?`${GD}22`:`${GR}22`, border:`1px solid ${isFund?GD:GR}38`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
             <Ic n={isFund?"trending":"shield"} c={isFund?t.gold:t.brand} s={16}/>
@@ -1161,7 +1516,7 @@ function InvestScreen() {
         {isFund && <div style={{ marginTop:14, padding:"12px 14px", borderRadius:16, background:`${GD}14`, border:`1px solid ${GD}30`, fontSize:12, color:t.sub, lineHeight:1.7 }}>
           The percentage on each fund below is an <b style={{ color:t.text }}>average of what already happened</b>, not a rate you are being offered. A certificate&rsquo;s percentage is a promise; a fund&rsquo;s is a track record.
         </div>}
-      </div>
+      </div>}
 
       <div style={{ fontSize:14, fontWeight:700, color:t.text, marginBottom:10 }}>{isFund?"Choose a Fund":"Choose a Certificate"}</div>
       <div style={{ display:"flex", gap:9, marginBottom:14 }}>
@@ -1197,7 +1552,7 @@ function InvestScreen() {
 
       <div id="tut-invest-calc" style={{ ...glass, borderRadius:22, padding:"20px", marginBottom:28 }}>
         <div style={{ fontSize:15, fontWeight:700, color:t.text, marginBottom:3 }}>Growth Calculator</div>
-        <div style={{ fontSize:12, color:t.sub, marginBottom:18, lineHeight:1.6 }}>{isFund?`If this fund keeps doing what it has done on average (${cert.rate}%), here is roughly where you land. It is an estimate, not a promise.`:`See how much you could earn at ${cert.rate}% over ${cert.dur.toLowerCase()}`}</div>
+        <div style={{ fontSize:12, color:t.sub, marginBottom:18, lineHeight:1.6 }}>{isFund?`If this fund keeps doing what it has done on average (${cert.rate}%), here is roughly where you land after one year. It is an estimate, not a promise.`:`See how much you could earn at ${cert.rate}% a year over ${cert.dur.toLowerCase()} — ${calcYears} × EGP ${Math.round(amount*cert.rate/100).toLocaleString()} in interest`}</div>
         <div style={{ marginBottom:18 }}>
           <div style={{ display:"flex", justifyContent:"space-between", marginBottom:9 }}>
             <span style={{ fontSize:13, color:t.sub }}>Investment Amount</span>
@@ -1206,13 +1561,13 @@ function InvestScreen() {
           <input type="range" min={1000} max={100000} step={1000} value={amount} onChange={e=>setAmount(Number(e.target.value))} style={{ width:"100%", accentColor:GR, cursor:"pointer" }}/>
           <div style={{ display:"flex", justifyContent:"space-between", fontSize:10, color:t.sub, marginTop:5 }}><span>EGP 1,000</span><span>EGP 100,000</span></div>
         </div>
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 }}>
+        <div style={{ display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:10 }}>
           <div style={{ background:t.cardAlt, border:`1px solid ${t.stroke}`, borderRadius:16, padding:"15px" }}>
             <div style={{ fontSize:10, color:t.sub }}>{isFund?"Estimated Profit":"Your Profit"}</div>
             <div style={{ fontSize:21, fontWeight:800, color:t.brand, marginTop:6 }}>+EGP {profit.toLocaleString()}</div>
           </div>
           <div style={{ background:`${GD}${t.dm?"22":"18"}`, border:`1px solid ${GD}38`, borderRadius:16, padding:"15px" }}>
-            <div style={{ fontSize:10, color:t.sub }}>Total After {cert.dur}</div>
+            <div style={{ fontSize:10, color:t.sub }}>{isFund ? "Total After 1 Year" : `Total After ${cert.dur}`}</div>
             <div style={{ fontSize:21, fontWeight:800, color:t.gold, marginTop:6 }}>EGP {total.toLocaleString()}</div>
           </div>
         </div>
@@ -1274,10 +1629,10 @@ function LearnScreen() {
     try {
       // System prompt goes in its own field; only the conversation turns are sent as messages.
       const system = buildSystemPrompt({
-        funnel_stage: profile?.flags.funnelStage ?? "curious",
+        funnel_stage: profile?.flags?.funnelStage ?? "curious",
         holdings: describeHoldings(holdings),
         limit_remaining: profile ? `EGP ${profile.limits.remaining.toLocaleString()}` : "",
-        reset_date: profile?.limits.resetDate ?? "",
+        reset_date: profile?.limits?.resetDate ?? "",
       })
       const turns = history
         .filter((m,i)=>!(i===0 && m.role==="assistant"))   // drop the canned greeting
@@ -1293,7 +1648,7 @@ function LearnScreen() {
   }
 
   return <div style={{ background:"transparent", height:"100%", display:"flex", flexDirection:"column" }}>
-    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, padding:"16px 20px 14px", borderBottom:`1px solid ${t.border}`, flexShrink:0 }}>
+    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, padding:"0 20px 14px", paddingTop:`calc(16px + var(--safe-top, 0px))`, borderBottom:`1px solid ${t.border}`, flexShrink:0 }}>
       <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:10 }}>
         <div>
           <div style={{ fontSize:20, fontWeight:800, color:t.text }}>Learn</div>
@@ -1351,7 +1706,7 @@ function LessonScreen({ nav }: { nav:(s:Screen)=>void }) {
   const [completed, setCompleted] = useState(false)
   const correctIdx=1, options=["EGP 800","EGP 1,000","EGP 400","EGP 2,000"]
   return <div style={{ background:"transparent", minHeight:"100%" }}>
-    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"12px 20px 16px" }}>
+    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"0 20px 16px", paddingTop:`calc(12px + var(--safe-top, 0px))` }}>
       <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:14 }}>
         <button onClick={()=>nav("learn")} style={{ width:36, height:36, borderRadius:22, background:t.chip, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, display:"flex", alignItems:"center", justifyContent:"center", border:"none", cursor:"pointer", flexShrink:0 }}><Ic n="left" c={t.text} s={18}/></button>
         <div style={{ flex:1 }}><div style={{ fontSize:11, color:t.sub, fontWeight:600 }}>Lesson 4 of 15</div></div>
@@ -1435,7 +1790,7 @@ function GoalForm({ title, initial, onSave, onCancel, saveLabel="Save Goal" }: {
     {key:"end"   as const, label:"End Date (Deadline)",  placeholder:"",                   icon:"calendar", type:"date", hint:"When do you want to reach your goal?"},
   ]
   return <div style={{ background:"transparent", minHeight:"100%" }}>
-    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"14px 20px 16px" }}>
+    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"0 20px 16px", paddingTop:`calc(14px + var(--safe-top, 0px))` }}>
       <div style={{ display:"flex", alignItems:"center", gap:12 }}>
         <button onClick={onCancel} style={{ width:36, height:36, borderRadius:22, background:t.chip, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, display:"flex", alignItems:"center", justifyContent:"center", border:"none", cursor:"pointer", flexShrink:0 }}><Ic n="left" c={t.text} s={18}/></button>
         <div style={{ fontSize:17, fontWeight:800, color:t.text }}>{title}</div>
@@ -1472,10 +1827,20 @@ function GoalsScreen({ userGoals, setUserGoals, builtinActive, setBuiltinActive,
   const [detailIdx, setDetailIdx] = useState(0)
   const [editingId, setEditingId] = useState<string>("")
   const track = t.dm?"#1E3D2C":"#E5E7EB"
+  const { profile, holdings } = useApp()
+  const goalCtx: GoalCtx = { profile, holdings, goalCount: userGoals.length }
+  const BUILTINS = BUILTIN_GOALS.map(g => evalBuiltin(g, goalCtx))
+  const investedTotal = holdings.reduce((n,h)=>n+h.amount, 0)
+  /** Same rule as the Home card: money committed, measured against the target. */
+  const goalMoney = (g:GoalEntry) => {
+    const target = parseInt((g.budget||"").replace(/\D/g,"")) || 0
+    const saved = target ? Math.min(investedTotal, target) : investedTotal
+    return { target, saved, pct: target ? Math.min(100, Math.round(saved/target*100)) : 0 }
+  }
 
   const getAllDisplayGoals = (uGoals:GoalEntry[], bActive:boolean[]): GoalEntry[] => [
     ...uGoals,
-    ...BUILTIN_GOALS.filter((_,i)=>bActive[i]).map((g,_i,_arr)=>({ id:`builtin-${BUILTIN_GOALS.indexOf(g)}`, name:g.title, budget:"", start:"", end:"", type:"builtin" as const, pct:g.pct }))
+    ...BUILTINS.filter((_,i)=>bActive[i]).map(g=>({ id:`builtin-${BUILTINS.indexOf(g)}`, name:g.title, budget:"", start:"", end:"", type:"builtin" as const, pct:g.pct }))
   ]
 
   const activateBuiltin = (i:number) => {
@@ -1503,11 +1868,11 @@ function GoalsScreen({ userGoals, setUserGoals, builtinActive, setBuiltinActive,
 
   // ── Goal detail view (built-in) ──
   if (view==="goalDetail") {
-    const ag = BUILTIN_GOALS[detailIdx]
+    const ag = BUILTINS[detailIdx]
     const isActive = builtinActive[detailIdx]
     const donePct = Math.round(ag.steps.filter(s=>s.done).length/ag.steps.length*100)
     return <div style={{ background:"transparent", minHeight:"100%" }}>
-      <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"14px 20px 16px" }}>
+      <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"0 20px 16px", paddingTop:`calc(14px + var(--safe-top, 0px))` }}>
         <div style={{ display:"flex", alignItems:"center", gap:12 }}>
           <button onClick={()=>setView("list")} style={{ width:36, height:36, borderRadius:22, background:t.chip, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, display:"flex", alignItems:"center", justifyContent:"center", border:"none", cursor:"pointer", flexShrink:0 }}><Ic n="left" c={t.text} s={18}/></button>
           <div style={{ fontSize:17, fontWeight:800, color:t.text }}>{ag.title}</div>
@@ -1523,7 +1888,7 @@ function GoalsScreen({ userGoals, setUserGoals, builtinActive, setBuiltinActive,
           </div>
         </div>
         <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, border:`1px solid ${t.stroke}`, borderRadius:20, padding:"16px", marginBottom:14, boxShadow:`0 1px 6px rgba(0,0,0,${t.dm?0.2:0.06})` }}>
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+          <div style={{ display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:12 }}>
             {[{label:"Goal Type",val:"Built-in",icon:"tag"},{label:"Status",val:isActive?"Active":"Inactive",icon:"refresh"}].map((item,i)=>(
               <div key={i} style={{ background:t.chip, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, border:`1px solid ${t.stroke}`, borderRadius:12, padding:"12px" }}>
                 <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:6 }}><Ic n={item.icon} c={t.sub} s={13}/><span style={{ fontSize:10, color:t.sub }}>{item.label}</span></div>
@@ -1561,7 +1926,7 @@ function GoalsScreen({ userGoals, setUserGoals, builtinActive, setBuiltinActive,
       saveLabel="Create Goal"
       onCancel={()=>setView("list")}
       onSave={vals=>{
-        const newGoal:GoalEntry = { id: Date.now().toString(), ...vals, type:"user" }
+        const newGoal:GoalEntry = { id: newLocalId(), ...vals, type:"user" }
         setUserGoals(p=>[...p, newGoal])
         if (!homeCardGoalId) setHomeCardGoalId(newGoal.id)
         setView("list")
@@ -1587,7 +1952,7 @@ function GoalsScreen({ userGoals, setUserGoals, builtinActive, setBuiltinActive,
   const inactiveBuiltins = BUILTIN_GOALS.filter((_,i)=>!builtinActive[i])
 
   return <div style={{ background:"transparent", minHeight:"100%" }}>
-    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"16px 20px 18px", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"0 20px 18px", paddingTop:`calc(16px + var(--safe-top, 0px))`, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
       <div>
         <div style={{ fontSize:20, fontWeight:800, color:t.text }}>My Goals</div>
         <div style={{ fontSize:13, color:t.sub }}>Your financial journey, step by step</div>
@@ -1602,7 +1967,7 @@ function GoalsScreen({ userGoals, setUserGoals, builtinActive, setBuiltinActive,
       <div id="tut-goals-list"/>
       {activeBuiltins.length > 0 && <>
         <div style={{ fontSize:11, fontWeight:800, color:t.sub, letterSpacing:1.2, textTransform:"uppercase" as const, marginBottom:14 }}>Active Goals</div>
-        {BUILTIN_GOALS.map((g,i)=>!builtinActive[i]?null:(
+        {BUILTINS.map((g,i)=>!builtinActive[i]?null:(
           <div key={i} style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, border:`1px solid ${t.stroke}`, borderRadius:22, padding:"18px", marginBottom:16, boxShadow:`0 2px 12px rgba(0,0,0,${t.dm?0.22:0.07})` }}>
             <div style={{ display:"flex", gap:14, alignItems:"center", marginBottom:16 }}>
               <div style={{ position:"relative", flexShrink:0 }}>
@@ -1639,7 +2004,7 @@ function GoalsScreen({ userGoals, setUserGoals, builtinActive, setBuiltinActive,
               <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:12 }}>
                 <div style={{ width:44, height:44, borderRadius:13, background:`${GR}14`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}><Ic n="target" c={t.brand} s={22}/></div>
                 <div style={{ flex:1 }}>
-                  <div style={{ fontSize:15, fontWeight:700, color:t.text }}>{g.name}</div>
+                  <div style={{ fontSize:15, fontWeight:700, color:t.text, whiteSpace:"nowrap" as const, overflow:"hidden", textOverflow:"ellipsis" }}>{g.name}</div>
                   <div style={{ fontSize:12, color:t.sub, marginTop:2 }}>Budget: {g.budget||"—"}</div>
                 </div>
                 <div style={{ display:"flex", flexDirection:"column", alignItems:"flex-end", gap:6 }}>
@@ -1650,7 +2015,7 @@ function GoalsScreen({ userGoals, setUserGoals, builtinActive, setBuiltinActive,
                   </div>
                 </div>
               </div>
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:12 }}>
+              <div style={{ display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:8, marginBottom:12 }}>
                 <div style={{ background:t.chip, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, border:`1px solid ${t.stroke}`, borderRadius:10, padding:"8px 10px" }}>
                   <div style={{ fontSize:10, color:t.sub }}>Start Date</div>
                   <div style={{ fontSize:12, fontWeight:600, color:t.text, marginTop:2 }}>{g.start||"—"}</div>
@@ -1660,9 +2025,13 @@ function GoalsScreen({ userGoals, setUserGoals, builtinActive, setBuiltinActive,
                   <div style={{ fontSize:12, fontWeight:600, color:t.text, marginTop:2 }}>{g.end||"—"}</div>
                 </div>
               </div>
-              <Bar pct={0} color={GR} h={4} trackColor={track}/>
+              <Bar pct={goalMoney(g).pct} color={GR} h={4} trackColor={track}/>
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginTop:10 }}>
-                <div style={{ fontSize:11, color:t.sub }}>Goal is active — keep saving!</div>
+                <div style={{ fontSize:11, color:t.sub }}>
+                  {goalMoney(g).target
+                    ? `EGP ${goalMoney(g).saved.toLocaleString()} of ${goalMoney(g).target.toLocaleString()} invested · ${goalMoney(g).pct}%`
+                    : `EGP ${investedTotal.toLocaleString()} invested · no target set`}
+                </div>
                 <button onClick={()=>setHomeCardGoalId(g.id)} style={{ padding:"5px 12px", borderRadius:999, border:`1.5px solid ${isSelected?GR:t.border}`, background:isSelected?`${GR}14`:"transparent", color:isSelected?GR:t.sub, fontSize:11, fontWeight:700, cursor:"pointer", transition:"all 0.2s" }}>
                   {isSelected ? "✓ Shown on Home" : "Show on Home"}
                 </button>
@@ -1675,7 +2044,7 @@ function GoalsScreen({ userGoals, setUserGoals, builtinActive, setBuiltinActive,
       {/* Inactive built-in goals */}
       {inactiveBuiltins.length > 0 && <>
         <div style={{ fontSize:11, fontWeight:800, color:t.sub, letterSpacing:1.2, textTransform:"uppercase" as const, marginBottom:14 }}>Available Goals</div>
-        {BUILTIN_GOALS.map((g,i)=>builtinActive[i]?null:(
+        {BUILTINS.map((g,i)=>builtinActive[i]?null:(
           <div key={i} style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, border:`1px solid ${t.stroke}`, borderRadius:18, padding:"14px 16px", marginBottom:10, display:"flex", alignItems:"center", gap:14, boxShadow:`0 1px 5px rgba(0,0,0,${t.dm?0.18:0.05})` }}>
             <div style={{ width:46, height:46, borderRadius:13, background:`${g.color}${t.dm?"22":"14"}`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}><Ic n={g.icon} c={g.color} s={22}/></div>
             <div style={{ flex:1 }}>
@@ -1696,34 +2065,57 @@ function GoalsScreen({ userGoals, setUserGoals, builtinActive, setBuiltinActive,
 // ─── RewardsScreen — earn/redeem/benefit focus, no lesson/streak sections ─────
 function RewardsScreen() {
   const { t } = useT()
+  const { profile, holdings } = useApp()
   const redeemOptions=[{pts:100,benefit:"EGP 10 Cashback",icon:"wallet",color:GR},{pts:500,benefit:"EGP 50 Cashback",icon:"gift",color:t.brand},{pts:1000,benefit:"Partner Discount",icon:"award",color:GD}]
   const partners=[{name:"Carrefour",offer:"5% off groceries",tag:"Cashback",icon:"tag"},{name:"B.TECH",offer:"EGP 200 voucher",tag:"Voucher",icon:"credit"},{name:"Fawry",offer:"Zero transfer fees",tag:"Offer",icon:"send"},{name:"Uber Egypt",offer:"3 free rides",tag:"Reward",icon:"refresh"}]
-  const activities=[{label:"Completed certificate lesson",pts:"+50 pts",icon:"book"},{label:"Set up first financial goal",pts:"+75 pts",icon:"target"},{label:"Made first investment",pts:"+100 pts",icon:"trending"}]
-  const badges=[{name:"First Lesson",icon:"book",earned:true},{name:"First Investment",icon:"trending",earned:true},{name:"Saver Pro",icon:"wallet",earned:false},{name:"Cert. Expert",icon:"shield",earned:false}]
+  const activities = holdings.length
+    ? holdings.slice(0,4).map(h=>({
+        label:`Subscribed to ${h.productName}`,
+        pts:`+${PTS_INVEST} pts`,
+        icon: h.kind==="fund" ? "trending" : "shield",
+      }))
+    : [{label:"No activity yet — set a goal or make your first investment", pts:"", icon:"info"}]
+  const invested = holdings.reduce((n,h)=>n+h.amount, 0)
+  const badges=[
+    {name:"First Goal",       icon:"target",   earned: !!profile?.flags?.firstGoalSet},
+    {name:"First Investment", icon:"trending", earned: holdings.length > 0},
+    {name:"Saver Pro",        icon:"wallet",   earned: invested >= 25000},
+    {name:"Diversified",      icon:"shield",   earned: holdings.some(h=>h.kind==="certificate") && holdings.some(h=>h.kind==="fund")},
+  ]
+
+  const stats = profile?.stats ?? { points:0, level:1, streakDays:0 }
+  const prog = progression(stats.points)
+  const [redeemNote, setRedeemNote] = useState(false)
 
   return <div style={{ background:"transparent", minHeight:"100%" }}>
     {/* Hero */}
-    <div style={{ background:`linear-gradient(135deg,${GRD},#0B5D3B)`, padding:"20px 20px 24px", color:"white" }}>
+    <div style={{ background:`linear-gradient(135deg,${GRD},#0B5D3B)`, padding:"0 20px 24px", paddingTop:"calc(20px + var(--safe-top, 0px))", color:"white" }}>
       <div style={{ fontSize:20, fontWeight:800, marginBottom:20 }}>My Rewards</div>
       <div id="tut-rewards-points" style={{ display:"flex", alignItems:"center", gap:16, marginBottom:16 }}>
         <div style={{ width:62, height:62, borderRadius:31, background:GD, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, boxShadow:`0 6px 20px ${GD}60` }}><Ic n="award" c="white" s={28}/></div>
-        <div><div style={{ fontSize:36, fontWeight:800, lineHeight:1 }}>2,450</div><div style={{ fontSize:13, color:"rgba(255,255,255,0.55)", marginTop:4 }}>Total Points</div></div>
+        <div><div style={{ fontSize:36, fontWeight:800, lineHeight:1 }}>{stats.points.toLocaleString()}</div><div style={{ fontSize:13, color:"rgba(255,255,255,0.55)", marginTop:4 }}>Total Points</div></div>
         <div style={{ marginLeft:"auto", textAlign:"right" as const }}>
-          <div style={{ fontSize:10, fontWeight:800, color:t.gold, letterSpacing:1.8 }}>LEVEL 3</div>
-          <div style={{ fontSize:14, fontWeight:700, marginTop:3 }}>Rising Investor</div>
-          <div style={{ fontSize:11, color:"rgba(255,255,255,0.4)", marginTop:2 }}>550 pts to Level 4</div>
+          <div style={{ fontSize:10, fontWeight:800, color:t.gold, letterSpacing:1.8 }}>LEVEL {prog.level}</div>
+          <div style={{ fontSize:14, fontWeight:700, marginTop:3 }}>{prog.name}</div>
+          <div style={{ fontSize:11, color:"rgba(255,255,255,0.4)", marginTop:2 }}>{prog.maxed ? "Top level reached" : `${prog.toNext.toLocaleString()} pts to Level ${prog.level+1}`}</div>
         </div>
       </div>
-      <div style={{ display:"flex", justifyContent:"space-between", fontSize:10, color:"rgba(255,255,255,0.38)", marginBottom:5 }}><span>Level 3</span><span>Level 4 · 3,000 pts</span></div>
-      <div style={{ height:6, background:"rgba(255,255,255,0.1)", borderRadius:4, overflow:"hidden", marginBottom:16 }}><div style={{ width:"82%", height:6, background:`linear-gradient(90deg,${GD},${GDS})`, borderRadius:4 }}/></div>
+      <div style={{ display:"flex", justifyContent:"space-between", fontSize:10, color:"rgba(255,255,255,0.38)", marginBottom:5 }}><span>Level {prog.level}</span><span>{prog.maxed ? "Max" : `Level ${prog.level+1} · ${prog.nextAt.toLocaleString()} pts`}</span></div>
+      <div style={{ height:6, background:"rgba(255,255,255,0.1)", borderRadius:4, overflow:"hidden", marginBottom:16 }}><div style={{ width:`${prog.pct}%`, height:6, background:`linear-gradient(90deg,${GD},${GDS})`, borderRadius:4, transition:"width 0.5s ease" }}/></div>
+      {redeemNote && <div style={{ background:"rgba(255,255,255,0.1)", border:"1px solid rgba(255,255,255,0.16)", borderRadius:14, padding:"12px 14px", marginBottom:12, fontSize:11.5, color:"rgba(255,255,255,0.75)", lineHeight:1.6 }}>
+        Redemption is not part of this demo — points and cashback are tracked, but nothing is paid out.
+      </div>}
       {/* Cashback CTA */}
       <div style={{ background:"rgba(255,255,255,0.08)", borderRadius:14, padding:"14px 16px", display:"flex", justifyContent:"space-between", alignItems:"center", border:"1px solid rgba(255,255,255,0.1)" }}>
         <div>
           <div style={{ fontSize:12, color:"rgba(255,255,255,0.6)", marginBottom:4 }}>Redeem your points for cashback, discounts and rewards.</div>
           <div style={{ fontSize:11, color:"rgba(255,255,255,0.45)" }}>Available Cashback</div>
-          <div style={{ fontSize:28, fontWeight:800, color:t.gold }}>EGP 120</div>
+          <div style={{ fontSize:28, fontWeight:800, color:t.gold }}>EGP {prog.cashback.toLocaleString()}</div>
         </div>
-        <button id="tut-rewards-redeem" style={{ padding:"12px 18px", borderRadius:999, background:GD, color:"white", border:"none", fontSize:13, fontWeight:700, cursor:"pointer", flexShrink:0 }}>Redeem Points</button>
+        <button id="tut-rewards-redeem" onClick={()=>setRedeemNote(true)} disabled={stats.points < redeemOptions[0].pts}
+          style={{ padding:"12px 18px", borderRadius:999, background:stats.points < redeemOptions[0].pts ? "rgba(255,255,255,0.14)" : GD, color:stats.points < redeemOptions[0].pts ? "rgba(255,255,255,0.5)" : "white", border:"none", fontSize:13, fontWeight:700, cursor:stats.points < redeemOptions[0].pts ? "default" : "pointer", flexShrink:0 }}>
+          {stats.points < redeemOptions[0].pts ? `${redeemOptions[0].pts - stats.points} pts to go` : "Redeem Points"}
+        </button>
       </div>
     </div>
 
@@ -1757,8 +2149,9 @@ function RewardsScreen() {
       </div>
 
       {/* Partner Rewards */}
-      <div style={{ fontSize:11, fontWeight:800, color:t.sub, letterSpacing:1.2, textTransform:"uppercase" as const, marginBottom:12 }}>Partner Rewards</div>
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:18 }}>
+      <div style={{ fontSize:11, fontWeight:800, color:t.sub, letterSpacing:1.2, textTransform:"uppercase" as const, marginBottom:4 }}>Partner Rewards</div>
+      <div style={{ fontSize:11, color:t.sub, marginBottom:12, lineHeight:1.6 }}>Examples of the kind of partner offer this programme would carry — none of these are live deals.</div>
+      <div style={{ display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:10, marginBottom:18 }}>
         {partners.map((p,i)=><div key={i} style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, border:`1px solid ${t.stroke}`, borderRadius:18, padding:"14px", boxShadow:`0 1px 5px rgba(0,0,0,${t.dm?0.18:0.05})` }}>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:8 }}>
             <div style={{ width:36, height:36, borderRadius:10, background:t.dm?`${GR}20`:GRL, display:"flex", alignItems:"center", justifyContent:"center" }}><Ic n={p.icon} c={t.brand} s={18}/></div>
@@ -1771,7 +2164,7 @@ function RewardsScreen() {
 
       {/* Achievements (secondary) */}
       <div style={{ fontSize:11, fontWeight:800, color:t.sub, letterSpacing:1.2, textTransform:"uppercase" as const, marginBottom:12 }}>Achievement Badges</div>
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:10, marginBottom:18 }}>
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(4, minmax(0,1fr))", gap:10, marginBottom:18 }}>
         {badges.map((b,i)=><div key={i} style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, border:`1px solid ${t.stroke}`, borderRadius:18, padding:"12px 8px", display:"flex", flexDirection:"column", alignItems:"center", gap:6, boxShadow:`0 1px 4px rgba(0,0,0,${t.dm?0.18:0.05})`, opacity:b.earned?1:0.42 }}>
           <div style={{ width:38, height:38, borderRadius:19, background:b.earned?`${GD}22`:t.bg, display:"flex", alignItems:"center", justifyContent:"center" }}><Ic n={b.icon} c={b.earned?GD:t.sub} s={18}/></div>
           <div style={{ fontSize:9, fontWeight:600, color:t.text, textAlign:"center" as const, lineHeight:1.3 }}>{b.name}</div>
@@ -1793,6 +2186,12 @@ function RewardsScreen() {
 // ─── DailyReviewScreen ────────────────────────────────────────────────────────
 function DailyReviewScreen({ nav }: { nav:(s:Screen)=>void }) {
   const { t } = useT()
+  const { holdings, profile } = useApp()
+  const today = new Date()
+  const todayISO = localISO(today)
+  const boughtToday = holdings.filter(h => h.purchasedAt === todayISO)
+  const investedToday = boughtToday.reduce((n,h)=>n+h.amount, 0)
+  const investedTotal = holdings.reduce((n,h)=>n+h.amount, 0)
   const spending = [
     { label:"Food & Drinks",   amt:180, icon:"gift",    color:GR  },
     { label:"Shopping",        amt:120, icon:"tag",     color:GD  },
@@ -1801,16 +2200,16 @@ function DailyReviewScreen({ nav }: { nav:(s:Screen)=>void }) {
   ]
   const totalSpent = spending.reduce((s,c)=>s+c.amt,0)
   const maxAmt = Math.max(...spending.map(c=>c.amt))
-  const topCategory = spending[0].label
+  const topCategory = spending.reduce((a,b)=>b.amt>a.amt?b:a).label
 
   return <div style={{ background:"transparent", minHeight:"100%" }}>
     {/* Header */}
-    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"14px 20px 16px" }}>
+    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"0 20px 16px", paddingTop:`calc(14px + var(--safe-top, 0px))` }}>
       <div style={{ display:"flex", alignItems:"center", gap:12 }}>
         <button onClick={()=>nav("home")} style={{ width:36, height:36, borderRadius:22, background:t.chip, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, display:"flex", alignItems:"center", justifyContent:"center", border:"none", cursor:"pointer", flexShrink:0 }}><Ic n="left" c={t.text} s={18}/></button>
         <div>
           <div style={{ fontSize:18, fontWeight:800, color:t.text }}>Daily Review</div>
-          <div style={{ fontSize:12, color:t.sub }}>Wednesday, August 19</div>
+          <div style={{ fontSize:12, color:t.sub }}>{today.toLocaleDateString(undefined,{ weekday:"long", month:"long", day:"numeric" })}</div>
         </div>
       </div>
     </div>
@@ -1818,16 +2217,23 @@ function DailyReviewScreen({ nav }: { nav:(s:Screen)=>void }) {
     <div style={{ padding:"14px 16px 28px" }}>
       {/* Today's Activity summary */}
       <div style={{ fontSize:11, fontWeight:800, color:t.sub, letterSpacing:1.2, textTransform:"uppercase" as const, marginBottom:12 }}>{"Today's Activity"}</div>
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:10, marginBottom:18 }}>
+      <div style={{ display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)", gap:10, marginBottom:18 }}>
         {[
-          { label:"Total Spent",    val:"EGP 450",   icon:"credit",   color:ERR  },
-          { label:"Total Saved",    val:"EGP 500",   icon:"shield",   color:GR   },
-          { label:"Total Invested", val:"EGP 1,000", icon:"trending", color:GD   },
+          { label:"Spent today",    val:`EGP ${totalSpent}`,                    icon:"credit",   color:ERR  },
+          { label:"Invested today", val:`EGP ${investedToday.toLocaleString()}`, icon:"shield",   color:GR   },
+          { label:"Invested total", val:`EGP ${investedTotal.toLocaleString()}`, icon:"trending", color:GD   },
         ].map((s,i)=><div key={i} style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderRadius:18, padding:"14px 10px", display:"flex", flexDirection:"column", gap:8, boxShadow:`0 1px 5px rgba(0,0,0,${t.dm?0.2:0.06})`, border:`1px solid ${s.color}14` }}>
           <div style={{ width:34, height:34, borderRadius:10, background:`${s.color}14`, display:"flex", alignItems:"center", justifyContent:"center" }}><Ic n={s.icon} c={s.color} s={17}/></div>
           <div style={{ fontSize:13, fontWeight:800, color:s.color, lineHeight:1.1 }}>{s.val}</div>
           <div style={{ fontSize:10, color:t.sub, lineHeight:1.3 }}>{s.label}</div>
         </div>)}
+      </div>
+
+      <div style={{ display:"flex", gap:10, alignItems:"flex-start", background:`${GD}12`, border:`1px solid ${GD}30`, borderRadius:16, padding:"12px 14px", marginBottom:14 }}>
+        <Ic n="info" c={t.gold} s={16}/>
+        <div style={{ fontSize:11.5, color:t.sub, lineHeight:1.6 }}>
+          Spending below is sample data. NBE Youth does not read your card transactions yet, so only the investment figures are yours.
+        </div>
       </div>
 
       {/* Spending Breakdown */}
@@ -1851,17 +2257,24 @@ function DailyReviewScreen({ nav }: { nav:(s:Screen)=>void }) {
       {/* Investment Activity */}
       <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, border:`1px solid ${t.stroke}`, borderRadius:20, padding:"16px", marginBottom:14, boxShadow:`0 1px 6px rgba(0,0,0,${t.dm?0.2:0.06})` }}>
         <div style={{ fontSize:14, fontWeight:800, color:t.text, marginBottom:14 }}>Investments</div>
-        <div style={{ background:t.dm?`${GR}18`:GRLL, borderRadius:12, padding:"14px 16px", display:"flex", alignItems:"center", gap:14, border:`1px solid ${GR}20` }}>
-          <div style={{ width:44, height:44, borderRadius:13, background:`${GR}18`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}><Ic n="trending" c={t.brand} s={22}/></div>
-          <div style={{ flex:1 }}>
-            <div style={{ fontSize:16, fontWeight:800, color:t.text }}>EGP 1,000</div>
-            <div style={{ fontSize:12, color:t.sub, marginTop:2 }}>Invested Today · Premium Certificate</div>
-          </div>
-          <div style={{ textAlign:"right" as const }}>
-            <div style={{ fontSize:12, fontWeight:700, color:t.brand }}>+EGP 25</div>
-            <div style={{ fontSize:10, color:t.sub, marginTop:1 }}>expected</div>
-          </div>
-        </div>
+        {boughtToday.length === 0
+          ? <div style={{ background:t.chip, borderRadius:12, padding:"14px 16px", fontSize:12.5, color:t.sub, lineHeight:1.6, border:`1px solid ${t.stroke}` }}>
+              Nothing invested today.{holdings.length > 0 ? ` You hold EGP ${investedTotal.toLocaleString()} across ${holdings.length} ${holdings.length===1?"product":"products"}.` : " The Invest tab is where you start."}
+            </div>
+          : boughtToday.map(h => {
+              const pr = holdingProgress(h)
+              return <div key={h.id} style={{ background:t.dm?`${GR}18`:GRLL, borderRadius:12, padding:"14px 16px", display:"flex", alignItems:"center", gap:14, border:`1px solid ${GR}20`, marginBottom:8 }}>
+                <div style={{ width:44, height:44, borderRadius:13, background:`${GR}18`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}><Ic n={h.kind==="fund"?"trending":"shield"} c={t.brand} s={22}/></div>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ fontSize:16, fontWeight:800, color:t.text }}>EGP {h.amount.toLocaleString()}</div>
+                  <div style={{ fontSize:12, color:t.sub, marginTop:2, whiteSpace:"nowrap" as const, overflow:"hidden", textOverflow:"ellipsis" }}>Invested Today · {h.productName}</div>
+                </div>
+                <div style={{ textAlign:"right" as const, flexShrink:0 }}>
+                  <div style={{ fontSize:12, fontWeight:700, color:t.brand }}>+EGP {pr.totalProfit.toLocaleString()}</div>
+                  <div style={{ fontSize:10, color:t.sub, marginTop:1 }}>{h.kind==="fund" ? "if the average holds" : "at maturity"}</div>
+                </div>
+              </div>
+            })}
       </div>
 
       {/* Daily Insight */}
@@ -1870,7 +2283,12 @@ function DailyReviewScreen({ nav }: { nav:(s:Screen)=>void }) {
         <div>
           <div style={{ fontSize:11, fontWeight:800, color:"rgba(255,255,255,0.55)", letterSpacing:1.2, textTransform:"uppercase" as const, marginBottom:6 }}>Your Daily Insight</div>
           <div style={{ fontSize:14, color:"white", lineHeight:1.65, fontWeight:500 }}>
-            You spent most of your money on <span style={{ fontWeight:800, color:t.gold }}>{topCategory}</span> today. You also invested EGP 1,000 — a great step toward your certificate goal!
+            In the sample spending above, <span style={{ fontWeight:800, color:t.gold }}>{topCategory}</span> is the biggest slice.{" "}
+            {investedToday > 0
+              ? `You invested EGP ${investedToday.toLocaleString()} today — that money is now working for you.`
+              : investedTotal > 0
+                ? `You have EGP ${investedTotal.toLocaleString()} invested. Adding to it, even in small amounts, is what moves a goal.`
+                : "You have not invested yet — the Invest tab explains certificates and funds in plain language."}
           </div>
         </div>
       </div>
@@ -1879,22 +2297,43 @@ function DailyReviewScreen({ nav }: { nav:(s:Screen)=>void }) {
 }
 
 // ─── NotificationsScreen ──────────────────────────────────────────────────────
-type NotifType = "reminder"|"certificate"|"growth"
-interface Notif { id:number; type:NotifType; title:string; body:string; time:string; read:boolean }
+function buildNotifs(holdings:HoldingDoc[], profile:UserProfile|null): Notif[] {
+  return [
+    ...(holdings.length === 0
+      ? [{ id:1, type:"reminder" as NotifType, title:"Make your first investment", body:"You have not invested yet. The Invest tab walks you through certificates and funds in plain language.", time:"Now", read:false }]
+      : holdings.slice(0,3).map((h,i)=>({
+          id: 100+i,
+          type: (h.kind === "fund" ? "growth" : "certificate") as NotifType,
+          title: h.kind === "fund" ? `${h.productName} update` : `${h.productName} on track`,
+          body: h.kind === "fund"
+            ? `EGP ${h.amount.toLocaleString()} invested. Fund values move daily — the ~${h.rate}% figure is a historical average, not a promise.`
+            : `EGP ${h.amount.toLocaleString()} at ${h.rate}% fixed${h.maturesAt ? `, maturing ${h.maturesAt}` : ""}. Projected profit: +EGP ${holdingProgress(h).totalProfit.toLocaleString()}.`,
+          time: h.purchasedAt,
+          read: i > 0,
+        }))),
+    ...(profile ? [{
+      id:200, type:"growth" as NotifType, title:`${profile.stats.points.toLocaleString()} points earned`,
+      body: `You are Level ${progression(profile.stats.points).level} — ${progression(profile.stats.points).name}. That converts to EGP ${progression(profile.stats.points).cashback.toLocaleString()} cashback in Rewards.`,
+      time:"Today", read:false,
+    }] : []),
+    ...(profile && !profile.flags.firstGoalSet ? [{
+      id:201, type:"reminder" as NotifType, title:"Set your first goal",
+      body:"Goals turn saving into steps you can tick off. It takes about a minute in the Goals tab.",
+      time:"Today", read:false,
+    }] : []),
+    ...(profile && profile.limits.remaining < profile.limits.cycleCap ? [{
+      id:202, type:"certificate" as NotifType, title:"Investment limit updated",
+      body:`EGP ${profile.limits.remaining.toLocaleString()} of your EGP ${profile.limits.cycleCap.toLocaleString()} limit is still available. Resets ${profile.limits.resetDate}.`,
+      time:"Today", read:true,
+    }] : []),
+  ]
+}
 
 function NotificationsScreen({ nav }: { nav:(s:Screen)=>void }) {
   const { t, notifPrefs } = useT()
+  const { holdings, profile } = useApp()
   const [filter, setFilter] = useState<NotifType|null>(null)
-  const allNotifs: Notif[] = [
-    { id:1, type:"reminder", title:"Daily Learning Reminder", body:"You haven't completed your lesson today. Keep your 7-day streak alive — just 4 minutes away!", time:"Just now", read:false },
-    { id:2, type:"certificate", title:"New Certificate Available", body:"The 3-Year Growth Certificate (22% p.a.) is now open for applications. Min. investment: EGP 5,000.", time:"2 hours ago", read:false },
-    { id:3, type:"growth", title:"Your Investment Is Growing", body:"Your Premium Certificate is on track. Projected profit by maturity: +EGP 2,500 on your EGP 10,000.", time:"Yesterday", read:false },
-    { id:4, type:"reminder", title:"Goal Progress Check", body:"You are 75% toward your First Investment goal. Complete one more step to unlock your reward badge.", time:"2 days ago", read:true },
-    { id:5, type:"certificate", title:"Certificate Maturity Alert", body:"Your 1-Year Premium Certificate matures in 30 days. Visit the Invest screen to renew or withdraw.", time:"3 days ago", read:true },
-    { id:6, type:"growth", title:"Points Milestone Reached", body:"You have earned 2,450 points — enough to redeem EGP 120 cashback. Head to Rewards to claim it.", time:"4 days ago", read:true },
-    { id:7, type:"reminder", title:"Quiz Available", body:"A new quiz on Understanding Loans is ready. Complete it to earn 75 bonus points.", time:"5 days ago", read:true },
-  ]
-  const [notifs, setNotifs] = useState(allNotifs)
+  const [notifs, setNotifs] = useState(() => buildNotifs(holdings, profile))
   const iconFor=(type:NotifType)=>type==="reminder"?"bell":type==="certificate"?"chart":"trending"
   const colorFor=(type:NotifType)=>type==="reminder"?"#F97316":type==="certificate"?GR:GD
   const bgFor=(type:NotifType)=>type==="reminder"?"#FFF7ED":type==="certificate"?GRL:`${GD}14`
@@ -1905,7 +2344,7 @@ function NotificationsScreen({ nav }: { nav:(s:Screen)=>void }) {
   const markOne=(id:number)=>setNotifs(notifs.map(n=>n.id===id?{...n,read:true}:n))
   const filters:[string,NotifType|null][]=[["All",null],["Reminders","reminder"],["Certificates","certificate"],["Growth","growth"]]
   return <div style={{ background:"transparent", minHeight:"100%" }}>
-    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"16px 20px 18px" }}>
+    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"0 20px 18px", paddingTop:`calc(16px + var(--safe-top, 0px))` }}>
       <div style={{ display:"flex", alignItems:"center", gap:12 }}>
         <button onClick={()=>nav("home")} style={{ width:36, height:36, borderRadius:22, background:t.chip, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, display:"flex", alignItems:"center", justifyContent:"center", border:"none", cursor:"pointer", flexShrink:0 }}><Ic n="left" c={t.text} s={18}/></button>
         <div style={{ flex:1 }}>
@@ -1948,7 +2387,7 @@ function ProfileScreen({ nav }: { nav:(s:Screen)=>void }) {
   const invested = holdings.reduce((n,h)=>n+h.amount, 0)
 
   return <div style={{ background:"transparent", minHeight:"100%" }}>
-    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"16px 20px 18px" }}>
+    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"0 20px 18px", paddingTop:`calc(16px + var(--safe-top, 0px))` }}>
       <div style={{ display:"flex", alignItems:"center", gap:12 }}>
         <button onClick={()=>nav("home")} style={{ width:36, height:36, borderRadius:999, background:t.chip, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, border:`1px solid ${t.stroke}`, display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", flexShrink:0 }}><Ic n="left" c={t.text} s={18}/></button>
         <div style={{ fontSize:20, fontWeight:800, color:t.text }}>{tx("profile",lang)}</div>
@@ -1962,7 +2401,7 @@ function ProfileScreen({ nav }: { nav:(s:Screen)=>void }) {
         <div style={{ fontSize:13, color:t.sub, marginTop:2, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" as const }}>{profile?.email}</div>
         <div style={{ display:"inline-flex", alignItems:"center", gap:5, marginTop:7, background:`${GD}18`, border:`1px solid ${GD}30`, padding:"4px 10px", borderRadius:999 }}>
           <Ic n="award" c={t.gold} s={13}/>
-          <span style={{ fontSize:11, fontWeight:700, color:t.gold }}>{(profile?.stats.points ?? 0).toLocaleString()} pts · Level {profile?.stats.level ?? 1}</span>
+          <span style={{ fontSize:11, fontWeight:700, color:t.gold }}>{(profile?.stats?.points ?? 0).toLocaleString()} pts · Level {profile?.stats?.level ?? 1}</span>
         </div>
       </div>
     </div>
@@ -1971,7 +2410,7 @@ function ProfileScreen({ nav }: { nav:(s:Screen)=>void }) {
       <SSection label="Your money">
         <SRow icon="wallet" iconColor={GR} label="Total invested" sub={`Across ${holdings.length} ${holdings.length===1?"holding":"holdings"}`} right={<span style={{ fontSize:14, fontWeight:800, color:t.text }}>EGP {invested.toLocaleString()}</span>}/>
         <Divider/>
-        <SRow icon="chart" iconColor={GD} label="Remaining limit" sub={`Resets ${profile?.limits.resetDate ?? "—"}`} right={<span style={{ fontSize:14, fontWeight:800, color:t.gold }}>EGP {(profile?.limits.remaining ?? 0).toLocaleString()}</span>}/>
+        <SRow icon="chart" iconColor={GD} label="Remaining limit" sub={`Resets ${profile?.limits?.resetDate ?? "—"}`} right={<span style={{ fontSize:14, fontWeight:800, color:t.gold }}>EGP {(profile?.limits?.remaining ?? 0).toLocaleString()}</span>}/>
       </SSection>
 
       <SSection label="Preferences">
@@ -2002,7 +2441,7 @@ function SettingsScreen({ nav }: { nav:(s:Screen)=>void }) {
   const set = (key:string, value:unknown) => patch({ [`prefs.${key}`]: value })
 
   return <div style={{ background:"transparent", minHeight:"100%" }}>
-    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"16px 20px 18px" }}>
+    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"0 20px 18px", paddingTop:`calc(16px + var(--safe-top, 0px))` }}>
       <div style={{ display:"flex", alignItems:"center", gap:12 }}>
         <button onClick={()=>nav("profile")} style={{ width:36, height:36, borderRadius:999, background:t.chip, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, border:`1px solid ${t.stroke}`, display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", flexShrink:0 }}><Ic n="left" c={t.text} s={18}/></button>
         <div>
@@ -2076,7 +2515,7 @@ function SecurityScreen({ nav }: { nav:(s:Screen)=>void }) {
   const [showPwForm, setShowPwForm] = useState(false)
   const [showPrivacy, setShowPrivacy] = useState(false)
   return <div style={{ background:"transparent", minHeight:"100%" }}>
-    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"16px 20px 18px" }}>
+    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"0 20px 18px", paddingTop:`calc(16px + var(--safe-top, 0px))` }}>
       <div style={{ display:"flex", alignItems:"center", gap:12 }}>
         <button onClick={()=>nav("profile")} style={{ width:36, height:36, borderRadius:22, background:t.chip, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, display:"flex", alignItems:"center", justifyContent:"center", border:"none", cursor:"pointer", flexShrink:0 }}><Ic n="left" c={t.text} s={18}/></button>
         <div style={{ fontSize:20, fontWeight:800, color:t.text }}>{tx("security",lang)}</div>
@@ -2122,7 +2561,7 @@ function HelpScreen({ nav }: { nav:(s:Screen)=>void }) {
   const [msgSent, setMsgSent] = useState(false)
   const [msg, setMsg] = useState("")
   return <div style={{ background:"transparent", minHeight:"100%" }}>
-    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"16px 20px 18px" }}>
+    <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderBottom:`1px solid ${t.stroke}`, padding:"0 20px 18px", paddingTop:`calc(16px + var(--safe-top, 0px))` }}>
       <div style={{ display:"flex", alignItems:"center", gap:12 }}>
         <button onClick={()=>nav("profile")} style={{ width:36, height:36, borderRadius:22, background:t.chip, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, display:"flex", alignItems:"center", justifyContent:"center", border:"none", cursor:"pointer", flexShrink:0 }}><Ic n="left" c={t.text} s={18}/></button>
         <div style={{ fontSize:20, fontWeight:800, color:t.text }}>Help & Support</div>
@@ -2186,7 +2625,7 @@ function BottomNav({ active, onSelect }: { active:Screen; onSelect:(s:Screen)=>v
     { id:"rewards", label:tx("rewards",lang), icon:"award" },
   ]
   return <div id="tut-nav" style={{
-    position:"absolute", bottom:20, left:14, right:14, zIndex:30,
+    position:"absolute", bottom:`calc(20px + env(safe-area-inset-bottom) / var(--vp-scale, 1))`, left:14, right:14, zIndex:30,
     display:"flex", alignItems:"center", justifyContent:"space-between",
     padding:"9px 10px", borderRadius:999,
     background:t.navBg, backdropFilter:"blur(30px) saturate(180%)", WebkitBackdropFilter:"blur(30px) saturate(180%)",
@@ -2267,8 +2706,8 @@ const TUTORIALS: Partial<Record<Screen, TutStep[]>> = {
   ],
 }
 
-function TutorialOverlay({ steps, frameRef, onDone }: {
-  steps:TutStep[]; frameRef:React.RefObject<HTMLDivElement|null>; onDone:()=>void
+function TutorialOverlay({ steps, frameRef, onDone, scale=1 }: {
+  steps:TutStep[]; frameRef:React.RefObject<HTMLDivElement|null>; onDone:()=>void; scale?:number
 }) {
   const { t } = useT()
   const [i, setI] = useState(0)
@@ -2283,13 +2722,20 @@ function TutorialOverlay({ steps, frameRef, onDone }: {
       const el = document.getElementById(step.target)
       if (!el) { setRect(null); return }
       const f = frame.getBoundingClientRect(), r = el.getBoundingClientRect()
-      setRect({ top:r.top-f.top, left:r.left-f.left, width:r.width, height:r.height })
+      // getBoundingClientRect reports real pixels; the overlay is a child of
+      // the zoomed frame, so divide back into the frame's own coordinates.
+      setRect({
+        top:  (r.top  - f.top)  / scale,
+        left: (r.left - f.left) / scale,
+        width:  r.width  / scale,
+        height: r.height / scale,
+      })
     }
     const el = step.target ? document.getElementById(step.target) : null
     if (el) el.scrollIntoView({ behavior:"smooth", block:"center" })
     raf = window.setTimeout(measure, el ? 320 : 0)
     return ()=>window.clearTimeout(raf)
-  }, [i, step, frameRef])
+  }, [i, step, frameRef, scale])
 
   const pad = 8
   const spot = rect ? { top:rect.top-pad, left:rect.left-pad, width:rect.width+pad*2, height:rect.height+pad*2 } : null
@@ -2343,7 +2789,7 @@ function Splash({ dark }: { dark:boolean }) {
 }
 
 export default function App() {
-  const { user, ready, signIn, signUp, resetPassword, logOut, isDemo } = useAuth()
+  const { user, ready, signIn, signUp, resetPassword, logOut, demoSignIn, isDemo } = useAuth()
 
   const [authScreen, setAuthScreen] = useState<Screen>("login")
   const [screen, setScreen] = useState<Screen>("home")
@@ -2354,13 +2800,15 @@ export default function App() {
   const [builtinActive, setBuiltinActive] = useState<boolean[]>(BUILTIN_GOALS.map(g=>g.defaultActive))
   const [homeCardGoalId, setHomeCardGoalId] = useState<string|null>(null)
   const [tourReady, setTourReady] = useState(false)
-  const [statusLight, setStatusLight] = useState(false)
+  const [, setStatusLight] = useState(false)
+  const { scale } = useViewport()
+  const kbInset = useVisualViewport()
   const frameRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
   const uid = user?.uid ?? ""
-  const dm = profile?.prefs.darkMode ?? true
-  const lang = profile?.prefs.language ?? "en"
+  const dm = profile?.prefs?.darkMode ?? true
+  const lang = profile?.prefs?.language ?? "en"
   const t = dm ? darkTheme : lightTheme
 
   /* Load (or create) the profile, goals and holdings once a session exists. */
@@ -2372,15 +2820,38 @@ export default function App() {
       try {
         let p = await loadProfile(user.uid)
         if (!p) p = await createProfile(user.uid, user.displayName, user.email)
-        const [g, h] = await Promise.all([loadGoals(user.uid), loadHoldings(user.uid)])
         if (cancelled) return
+        // Show the app as soon as the profile is known — goals and holdings are
+        // two more round trips and nothing on first paint depends on them.
+        const rollover = cycleRollover(p)
+        if (rollover) {
+          p = { ...p, limits: { ...p.limits, remaining:p.limits.cycleCap, resetDate:String(rollover["limits.resetDate"]) } }
+          patchProfile(user.uid, rollover).catch(()=>{ /* applied locally regardless */ })
+        }
+        const streak = streakUpdate(p)
+        if (streak) {
+          p = { ...p, stats: { ...p.stats, streakDays: streak["stats.streakDays"] as number, lastActive: streak["stats.lastActive"] as string } }
+          patchProfile(user.uid, streak).catch(()=>{ /* applied locally regardless */ })
+        }
         setProfile(p)
-        setUserGoals(g.map(d=>({ id:d.id, name:d.name, budget:d.budget, start:d.start, end:d.end, type:d.type, pct:d.pct })))
-        setHoldings(h)
-        setHomeCardGoalId(prev => prev ?? g[0]?.id ?? null)
         setScreen(p.flags.onboardingComplete ? "home" : "onboarding")
+        setProfileReady(true)
+        Promise.all([loadGoals(user.uid), loadHoldings(user.uid)])
+          .then(([g, h]) => {
+            if (cancelled) return
+            setUserGoals(g.map(d=>({ id:d.id, name:d.name, budget:d.budget, start:d.start, end:d.end, type:d.type, pct:d.pct })))
+            setHoldings(h)
+            setHomeCardGoalId(prev => prev ?? g[0]?.id ?? null)
+          })
+          .catch(()=>{ /* lists stay empty until the next load */ })
       } catch {
-        if (!cancelled) { setProfile(DEFAULT_PROFILE(user.displayName, user.email)); setScreen("onboarding") }
+        // A failed read is not a new user. Fall back to the last profile we
+        // saw; only a genuinely unknown account starts onboarding.
+        if (cancelled) return
+        const cached = readMirror(user.uid)
+        const p = cached ?? DEFAULT_PROFILE(user.displayName, user.email)
+        setProfile(p)
+        setScreen(p.flags.onboardingComplete ? "home" : "onboarding")
       } finally {
         if (!cancelled) setProfileReady(true)
       }
@@ -2399,6 +2870,7 @@ export default function App() {
         for (const seg of parts.slice(0,-1)) node = node[seg] ??= {}
         node[parts[parts.length-1]] = value
       }
+      if (uid) mirrorProfile(uid, next as UserProfile)
       return next as UserProfile
     })
     if (uid) patchProfile(uid, p).catch(()=>{ /* offline: local state still applied */ })
@@ -2408,12 +2880,22 @@ export default function App() {
      hangs the UI whenever the backend is unreachable — write behind instead. */
   const buy = useCallback(async (h:Omit<HoldingDoc,"id">) => {
     if (!uid) return
-    const local: HoldingDoc = { ...h, id:`local-${Date.now()}` }
+    const local: HoldingDoc = { ...h, id:newLocalId() }
     setHoldings(prev => [local, ...prev])
     addHolding(uid, h)
       .then(saved => setHoldings(prev => prev.map(x => x.id===local.id ? saved : x)))
       .catch(()=>{ /* queued by the SDK; local entry stands */ })
   }, [uid])
+
+  /* Keep the page background behind the app matching the theme, so the iOS
+     safe areas and any overscroll never flash the default page colour. */
+  useEffect(()=>{
+    document.documentElement.style.setProperty("--app-bg", t.frame)
+  }, [t.frame])
+
+  useEffect(()=>{
+    document.documentElement.style.setProperty("--vp-scale", String(scale))
+  }, [scale])
 
   useEffect(()=>{
     scrollRef.current?.scrollTo({ top:0 })
@@ -2425,7 +2907,13 @@ export default function App() {
   const handleGoalSet = (entry: GoalEntry) => {
     setUserGoals(p => [...p, entry])
     setHomeCardGoalId(prev => prev ?? entry.id)
-    patch({ "flags.firstGoalSet": true, "flags.onboardingComplete": true, "flags.funnelStage": "understands" })
+    patch({
+      "flags.firstGoalSet": true,
+      "flags.onboardingComplete": true,
+      "flags.funnelStage": "understands",
+      "stats.points": (profile?.stats?.points ?? 0) + PTS_GOAL,
+      "stats.level": progression((profile?.stats?.points ?? 0) + PTS_GOAL).level,
+    })
     if (uid) {
       addGoal(uid, { name:entry.name, budget:entry.budget, start:entry.start, end:entry.end, type:entry.type, pct:entry.pct ?? 0 })
         .catch(()=>{ /* keep the local entry */ })
@@ -2439,15 +2927,20 @@ export default function App() {
   }
 
   const NO_NAV: Screen[] = ["login","signup","forgot","onboarding","goalsetup","notifications","lesson","profile","settings","security","help"]
-  const showNav = !!user && !NO_NAV.includes(screen)
+  // >100px of overlap is a keyboard, not an address bar. The pill would
+  // otherwise be shoved up the screen on top of the field being typed into.
+  const showNav = !!user && !NO_NAV.includes(screen) && kbInset < 100
   const isAuthScreen = !user
 
   const tourKey = (["home","invest","learn","goals","rewards"] as const).includes(screen as any) ? screen as TourKey : null
   const tour = tourKey ? TUTORIALS[tourKey] : undefined
-  const showTour = !!tour && showNav && !!profile && !profile.flags.toursSeen[tourKey!] && tourReady
+  const showTour = !!tour && showNav && !!profile && !profile.flags?.toursSeen?.[tourKey!] && tourReady
 
   const renderScreen = () => {
     if (!user) {
+      // No Firebase config → no credentials to check, so never show a login
+      // form that would accept any password.
+      if (isDemo) return <DemoGate demoSignIn={demoSignIn}/>
       if (authScreen === "signup") return <SignUpScreen nav={setAuthScreen} signUp={signUp}/>
       if (authScreen === "forgot") return <ForgotScreen nav={setAuthScreen} resetPassword={resetPassword}/>
       return <LoginScreen nav={setAuthScreen} signIn={signIn}/>
@@ -2482,16 +2975,12 @@ export default function App() {
     }
   }
 
-  const statusColor = isAuthScreen ? "white"
-    : screen === "onboarding" ? (statusLight ? "white" : "#0D2B24")
-    : t.text
-
   const themeValue = {
     t, lang,
     setLang: (l:"en"|"ar") => patch({ "prefs.language": l }),
-    faceId: profile?.prefs.faceId ?? false,
+    faceId: profile?.prefs?.faceId ?? false,
     setFaceId: (v:boolean) => patch({ "prefs.faceId": v }),
-    notifPrefs: profile?.prefs.notifications ?? { reminders:true, certs:true, growth:true },
+    notifPrefs: profile?.prefs?.notifications ?? { reminders:true, certs:true, growth:true },
     setNotifPref: (k:"reminders"|"certs"|"growth", v:boolean) => patch({ [`prefs.notifications.${k}`]: v }),
   }
 
@@ -2499,48 +2988,39 @@ export default function App() {
     <ThCtx.Provider value={themeValue}>
       <AppCtx.Provider value={{ uid, profile, patch, holdings, buy, logOut, isDemo }}>
         <div style={{
-          minHeight:"100vh", display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:18,
-          background: dm ? "linear-gradient(135deg,#02100A,#053024 42%,#07301C 72%,#141F0F)"
-                         : "linear-gradient(135deg,#0A3B2A,#0E5F42 40%,#3F7F5E 72%,#8FA36A)",
-          padding:24, position:"relative", overflow:"hidden", transition:"background 0.4s ease",
+          minHeight:"100dvh", display:"flex", flexDirection:"column", alignItems:"center",
+          justifyContent:"flex-start", gap:0,
+          background: t.frame, padding:0, position:"relative", overflow:"hidden", transition:"background 0.4s ease",
         }}>
-          <div style={{ position:"fixed", top:"10%", left:"5%", width:500, height:500, background:`${GR}18`, borderRadius:"50%", filter:"blur(140px)", pointerEvents:"none" }}/>
-          <div style={{ position:"fixed", bottom:"5%", right:"5%", width:400, height:400, background:`${GD}15`, borderRadius:"50%", filter:"blur(120px)", pointerEvents:"none" }}/>
-
           <div ref={frameRef} style={{
-            position:"relative", width:390, height:820, maxWidth:"100%", borderRadius:52, overflow:"hidden",
-            display:"flex", flexDirection:"column", background:t.frame,
-            boxShadow:`0 0 0 1px rgba(255,255,255,0.07),0 0 0 11px ${dm?"#020e07":"#0B1F16"},0 0 0 12px rgba(255,255,255,0.05),0 60px 160px rgba(0,0,0,0.72)`,
+            position:"relative",
+            // zoom scales layout, not just paint, so every px inside stays
+            // proportional on a 320px SE and a 430px Pro Max alike.
+            zoom: scale,
+            width:"100%",
+            height: `calc(var(--vvh, 100dvh) / ${scale})`,
+            // A wide window gets the same column, centred and capped, rather
+            // than a 390px layout stretched across it.
+            maxWidth: MAX_WIDTH,
+            borderRadius:0,
+            overflow:"hidden", display:"flex", flexDirection:"column",
+            background:"transparent",
             flexShrink:0, zIndex:1, transition:"background 0.4s ease",
+            // The inset is published as --safe-top and consumed by whichever
+            // element sits at the top of each screen, so backgrounds run all
+            // the way under the Dynamic Island instead of stopping below it.
+            ["--safe-top" as any]: `calc(env(safe-area-inset-top) / ${scale})`,
           }}>
             <div style={{ position:"absolute", top:-70, left:-60, width:320, height:320, borderRadius:"50%", background:t.orbA, filter:"blur(80px)", pointerEvents:"none" }}/>
             <div style={{ position:"absolute", bottom:-40, right:-70, width:300, height:300, borderRadius:"50%", background:t.orbB, filter:"blur(90px)", pointerEvents:"none" }}/>
 
-            <div style={{ height:44, display:"flex", alignItems:"center", justifyContent:"space-between", padding:"0 28px", flexShrink:0, position:"relative", zIndex:5 }}>
-              <span style={{ fontSize:14, fontWeight:700, color:statusColor }}>9:41</span>
-              <div style={{ position:"absolute", top:8, left:"50%", transform:"translateX(-50%)", width:120, height:28, background:"#080808", borderRadius:14 }}/>
-              <div style={{ display:"flex", gap:5, alignItems:"center" }}>
-                <svg viewBox="0 0 15 12" width={15} height={12}>
-                  <rect x="0" y="8" width="3" height="4" rx="0.5" fill={statusColor} opacity="0.45"/>
-                  <rect x="4" y="5" width="3" height="7" rx="0.5" fill={statusColor} opacity="0.65"/>
-                  <rect x="8" y="2" width="3" height="10" rx="0.5" fill={statusColor} opacity="0.85"/>
-                  <rect x="12" y="0" width="3" height="12" rx="0.5" fill={statusColor}/>
-                </svg>
-                <svg viewBox="0 0 25 12" width={25} height={12}>
-                  <rect x="0" y="1" width="22" height="10" rx="2.5" fill="none" stroke={statusColor} strokeWidth="1.2" opacity="0.7"/>
-                  <rect x="22.5" y="3.5" width="2" height="5" rx="1" fill={statusColor} opacity="0.4"/>
-                  <rect x="1.5" y="2.5" width="17" height="7" rx="1.5" fill={statusColor}/>
-                </svg>
-              </div>
-            </div>
-
-            <div ref={scrollRef} style={{ flex:1, overflowY:"auto" as const, position:"relative", zIndex:2, paddingBottom:showNav?96:0 }}>
+            <div ref={scrollRef} style={{ flex:1, overflowY:"auto" as const, position:"relative", zIndex:2, paddingBottom: showNav ? `calc(96px + env(safe-area-inset-bottom) / ${scale})` : 0 }}>
               {renderScreen()}
             </div>
 
             {showNav && <BottomNav active={screen} onSelect={setScreen}/>}
             {showTour && tour && tourKey && (
-              <TutorialOverlay steps={tour} frameRef={frameRef} onDone={()=>patch({ [`flags.toursSeen.${tourKey}`]: true })}/>
+              <TutorialOverlay steps={tour} frameRef={frameRef} scale={scale} onDone={()=>patch({ [`flags.toursSeen.${tourKey}`]: true, "stats.points": (profile?.stats?.points ?? 0) + PTS_TOUR, "stats.level": progression((profile?.stats?.points ?? 0) + PTS_TOUR).level })}/>
             )}
           </div>
         </div>
