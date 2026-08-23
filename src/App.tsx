@@ -179,22 +179,49 @@ function useVisualViewport() {
     const vv = window.visualViewport
     if (!vv) return
     let frame = 0
-    const on = () => {
+    const on = (cause?:string) => {
       cancelAnimationFrame(frame)
       frame = requestAnimationFrame(()=>{
-        const overlap = Math.max(0, Math.round(window.innerHeight - (vv.height + vv.offsetTop)))
-        document.documentElement.style.setProperty("--vvh", `${Math.round(vv.height)}px`)
+        // A pinch-zoomed viewport reports a smaller height for reasons that
+        // have nothing to do with the keyboard; resizing the app to it would
+        // fight the user's zoom. Only trust an unzoomed measurement.
+        if (Math.abs(vv.scale - 1) > 0.01) return
+        // No offsetTop term: iOS scrolls the layout viewport when the keyboard
+        // opens, offsetTop grows by almost exactly what vv.height lost, and the
+        // two cancelled — the measured overlap was ~0 with a keyboard on screen.
+        const overlap = Math.max(0, Math.round(window.innerHeight - vv.height))
+        // The URL bar collapsing also moves vv.height. Feeding that into the
+        // frame height shifted the whole layout mid-scroll, so only a genuine
+        // resize may change it; a scroll just re-reads the keyboard inset.
+        if (cause !== "scroll") document.documentElement.style.setProperty("--vvh", `${Math.round(vv.height)}px`)
         document.documentElement.style.setProperty("--kb-inset", `${overlap}px`)
         setKbInset(overlap)
       })
     }
+    // Closing the keyboard leaves the page panned up with no way to scroll it
+    // back — the shell is overflow:hidden. Put it back by hand, after the
+    // browser has finished animating the keyboard away.
+    const onBlur = () => {
+      setTimeout(()=>{
+        window.scrollTo(0, 0)
+        document.documentElement.scrollTop = 0
+        document.body.scrollTop = 0
+        on()
+      }, 120)
+    }
     on()
-    vv.addEventListener("resize", on)
-    vv.addEventListener("scroll", on)
+    const onScroll = () => on("scroll")
+    const onResize = () => on("resize")
+    vv.addEventListener("resize", onResize)
+    vv.addEventListener("scroll", onScroll)
+    window.addEventListener("focusout", onBlur)
+    window.addEventListener("orientationchange", onResize)
     return ()=>{
       cancelAnimationFrame(frame)
-      vv.removeEventListener("resize", on)
-      vv.removeEventListener("scroll", on)
+      vv.removeEventListener("resize", onResize)
+      vv.removeEventListener("scroll", onScroll)
+      window.removeEventListener("focusout", onBlur)
+      window.removeEventListener("orientationchange", onResize)
     }
   }, [])
   return kbInset
@@ -370,7 +397,7 @@ function AuthInput({ icon, placeholder, type="text", value, onChange, style:extr
     <Ic n={icon} c={focus?t.brand:t.sub} s={18}/>
     <input type={type} value={value} autoComplete={autoComplete} placeholder={placeholder}
       onChange={e=>onChange(e.target.value)} onFocus={()=>setFocus(true)} onBlur={()=>setFocus(false)}
-      style={{ flex:1, border:"none", outline:"none", fontSize:14, color:t.text, background:"transparent", fontFamily:"inherit", minWidth:0 }}/>
+      style={{ flex:1, border:"none", outline:"none", fontSize:16, color:t.text, background:"transparent", fontFamily:"inherit", minWidth:0 }}/>
   </div>
 }
 
@@ -384,7 +411,7 @@ function PasswordInput({ placeholder, value, onChange, autoComplete }: {
     <Ic n="lock" c={focus?t.brand:t.sub} s={18}/>
     <input type={show?"text":"password"} value={value} autoComplete={autoComplete} placeholder={placeholder}
       onChange={e=>onChange(e.target.value)} onFocus={()=>setFocus(true)} onBlur={()=>setFocus(false)}
-      style={{ flex:1, border:"none", outline:"none", fontSize:14, color:t.text, background:"transparent", fontFamily:"inherit", minWidth:0 }}/>
+      style={{ flex:1, border:"none", outline:"none", fontSize:16, color:t.text, background:"transparent", fontFamily:"inherit", minWidth:0 }}/>
     <button type="button" onClick={()=>setShow(p=>!p)} style={{ background:"none", border:"none", cursor:"pointer", padding:0, display:"flex", alignItems:"center", flexShrink:0 }}>
       <Ic n={show?"eye":"eye-off"} c={t.sub} s={18}/>
     </button>
@@ -628,7 +655,7 @@ const SLIDES_DARK = [
   "linear-gradient(145deg,#241E0B,#3A3115 55%,#1A1607)",
 ]
 
-function OnboardingScreen({ onDone, onGoalSetup, onTone }: { onDone:()=>void; onGoalSetup:()=>void; onTone?:(light:boolean)=>void }) {
+function OnboardingScreen({ onDone, onTone }: { onDone:()=>void; onTone?:(light:boolean)=>void }) {
   const { t } = useT()
   const [slide, setSlide] = useState(0)
   const s = SLIDES[slide]
@@ -638,7 +665,7 @@ function OnboardingScreen({ onDone, onGoalSetup, onTone }: { onDone:()=>void; on
   return <div style={{ height:"100%", display:"flex", flexDirection:"column", background:bg, transition:"background 0.5s ease" }}>
     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"0 22px 14px", paddingTop:"calc(14px + var(--safe-top, 0px))" }}>
       <Logo light={isLight}/>
-      {slide<2 && <button onClick={onGoalSetup} style={{ fontSize:13, fontWeight:600, color:isLight?"rgba(255,255,255,0.65)":t.sub, background:"none", border:"none", cursor:"pointer" }}>Skip</button>}
+      {slide<2 && <button onClick={onDone} style={{ fontSize:13, fontWeight:600, color:isLight?"rgba(255,255,255,0.65)":t.sub, background:"none", border:"none", cursor:"pointer" }}>Skip</button>}
     </div>
     <div key={`i-${slide}`} style={{ flex:1, display:"flex", alignItems:"center", justifyContent:"center", padding:"10px 20px", animation:"fadeUp 0.4s ease-out" }}>{s.illust}</div>
     <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderRadius:"28px 28px 0 0", padding:"26px 24px 32px", boxShadow:"0 -4px 24px rgba(0,0,0,0.07)" }}>
@@ -650,7 +677,7 @@ function OnboardingScreen({ onDone, onGoalSetup, onTone }: { onDone:()=>void; on
       <div style={{ display:"flex", gap:6, justifyContent:"center", marginBottom:22 }}>
         {SLIDES.map((_,i)=><div key={i} onClick={()=>setSlide(i)} style={{ height:7, width:i===slide?28:7, borderRadius:4, background:i===slide?GR:t.track, transition:"all 0.3s ease", cursor:"pointer" }}/>)}
       </div>
-      <button onClick={slide<2?()=>setSlide(slide+1):onGoalSetup} style={{ width:"100%", padding:"15px", borderRadius:999, border:"none", background:`linear-gradient(135deg,${GR},${GRD})`, color:"white", fontSize:15, fontWeight:700, cursor:"pointer", boxShadow:`0 6px 20px ${GR}50` }}>
+      <button onClick={slide<2?()=>setSlide(slide+1):onDone} style={{ width:"100%", padding:"15px", borderRadius:999, border:"none", background:`linear-gradient(135deg,${GR},${GRD})`, color:"white", fontSize:15, fontWeight:700, cursor:"pointer", boxShadow:`0 6px 20px ${GR}50` }}>
         {slide<2?"Next →":"Set My First Goal →"}
       </button>
     </div>
@@ -678,7 +705,7 @@ function GoalSetupSheet({ onGoalSet }: { onGoalSet:(entry:GoalEntry)=>void }) {
         value={val}
         onChange={e=>set(e.target.value)}
         placeholder={placeholder}
-        style={{ width:"100%", border:`1.5px solid ${val?GR:t.stroke}`, borderRadius:999, padding:"13px 18px", fontSize:14, outline:"none", fontFamily:"inherit", color:t.text, boxSizing:"border-box" as const, transition:"border-color 0.2s", background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur }}
+        style={{ width:"100%", border:`1.5px solid ${val?GR:t.stroke}`, borderRadius:999, padding:"13px 18px", fontSize:16, outline:"none", fontFamily:"inherit", color:t.text, boxSizing:"border-box" as const, transition:"border-color 0.2s", background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur }}
       />
     </div>
   )
@@ -695,7 +722,7 @@ function GoalSetupSheet({ onGoalSet }: { onGoalSet:(entry:GoalEntry)=>void }) {
           value={name}
           onChange={e=>setName(e.target.value)}
           placeholder="e.g. Buy a Laptop"
-          style={{ width:"100%", border:`1.5px solid ${name?GR:t.stroke}`, borderRadius:999, padding:"13px 18px", fontSize:14, outline:"none", fontFamily:"inherit", color:t.text, boxSizing:"border-box" as const, transition:"border-color 0.2s", background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur }}
+          style={{ width:"100%", border:`1.5px solid ${name?GR:t.stroke}`, borderRadius:999, padding:"13px 18px", fontSize:16, outline:"none", fontFamily:"inherit", color:t.text, boxSizing:"border-box" as const, transition:"border-color 0.2s", background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur }}
         />
       </div>
       {/* Chips */}
@@ -710,11 +737,11 @@ function GoalSetupSheet({ onGoalSet }: { onGoalSet:(entry:GoalEntry)=>void }) {
       <div style={{ display:"grid", gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)", gap:10, marginBottom:14 }}>
         <div>
           <div style={{ fontSize:11, fontWeight:700, color:t.sub, marginBottom:6, letterSpacing:0.3 }}>START DATE</div>
-          <input type="date" value={start} onChange={e=>setStart(e.target.value)} style={{ width:"100%", border:`1.5px solid ${start?GR:t.stroke}`, borderRadius:999, padding:"12px 14px", fontSize:13, outline:"none", fontFamily:"inherit", color:t.text, boxSizing:"border-box" as const, transition:"border-color 0.2s", background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur }}/>
+          <input type="date" value={start} onChange={e=>setStart(e.target.value)} style={{ width:"100%", border:`1.5px solid ${start?GR:t.stroke}`, borderRadius:999, padding:"12px 14px", fontSize:16, outline:"none", fontFamily:"inherit", color:t.text, boxSizing:"border-box" as const, transition:"border-color 0.2s", background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur }}/>
         </div>
         <div>
           <div style={{ fontSize:11, fontWeight:700, color:t.sub, marginBottom:6, letterSpacing:0.3 }}>END DATE</div>
-          <input type="date" value={end} onChange={e=>setEnd(e.target.value)} style={{ width:"100%", border:`1.5px solid ${end?GR:t.stroke}`, borderRadius:999, padding:"12px 14px", fontSize:13, outline:"none", fontFamily:"inherit", color:t.text, boxSizing:"border-box" as const, transition:"border-color 0.2s", background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur }}/>
+          <input type="date" value={end} onChange={e=>setEnd(e.target.value)} style={{ width:"100%", border:`1.5px solid ${end?GR:t.stroke}`, borderRadius:999, padding:"12px 14px", fontSize:16, outline:"none", fontFamily:"inherit", color:t.text, boxSizing:"border-box" as const, transition:"border-color 0.2s", background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur }}/>
         </div>
       </div>
 
@@ -1691,7 +1718,7 @@ function LearnScreen() {
 
     <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, padding:"12px 16px 16px", borderTop:`1px solid ${t.border}`, flexShrink:0 }}>
       <div id="tut-learn-input" style={{ display:"flex", gap:10, alignItems:"center", background:t.inputBg, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderRadius:999, padding:"8px 8px 8px 16px", border:`1px solid ${t.strokeS}` }}>
-        <input value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&send(input)} disabled={busy} placeholder={busy?"Thinking…":"Ask a question..."} style={{ flex:1, border:"none", outline:"none", fontSize:13, color:t.text, background:"transparent", fontFamily:"inherit" }}/>
+        <input value={input} onChange={e=>setInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&send(input)} disabled={busy} placeholder={busy?"Thinking…":"Ask a question..."} style={{ flex:1, border:"none", outline:"none", fontSize:16, color:t.text, background:"transparent", fontFamily:"inherit" }}/>
         <button onClick={()=>send(input)} disabled={busy||!input.trim()} style={{ width:36, height:36, borderRadius:999, background:`linear-gradient(135deg,${GR},${GRD})`, border:"none", display:"flex", alignItems:"center", justifyContent:"center", cursor:busy?"default":"pointer", flexShrink:0, opacity:(busy||!input.trim())?0.45:1, boxShadow:`0 6px 16px ${GR}45`, transition:"opacity 0.2s" }}><Ic n="send" c="white" s={16}/></button>
       </div>
     </div>
@@ -1804,7 +1831,7 @@ function GoalForm({ title, initial, onSave, onCancel, saveLabel="Save Goal" }: {
             <div style={{ fontSize:11, color:t.sub, opacity:0.7, marginBottom:6 }}>{f.hint}</div>
             <div style={{ display:"flex", alignItems:"center", gap:10, border:`1.5px solid ${t.border}`, borderRadius:999, padding:"11px 16px", background:t.inputBg, backdropFilter:t.blur, WebkitBackdropFilter:t.blur }}>
               <Ic n={f.icon} c={t.sub} s={16}/>
-              <input type={f.type} placeholder={f.placeholder} value={form[f.key]} onChange={e=>setForm(p=>({...p,[f.key]:e.target.value}))} style={{ flex:1, border:"none", outline:"none", fontSize:13, color:t.text, background:"transparent", fontFamily:"inherit" }}/>
+              <input type={f.type} placeholder={f.placeholder} value={form[f.key]} onChange={e=>setForm(p=>({...p,[f.key]:e.target.value}))} style={{ flex:1, border:"none", outline:"none", fontSize:16, color:t.text, background:"transparent", fontFamily:"inherit" }}/>
             </div>
           </div>
         ))}
@@ -2528,7 +2555,7 @@ function SecurityScreen({ nav }: { nav:(s:Screen)=>void }) {
           {["Current Password","New Password","Confirm New Password"].map(ph=>(
             <div key={ph} style={{ display:"flex", alignItems:"center", gap:10, border:`1.5px solid ${t.border}`, borderRadius:12, padding:"11px 14px", background:t.inputBg, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, marginBottom:10 }}>
               <Ic n="lock" c={t.sub} s={16}/>
-              <input type="password" placeholder={ph} style={{ flex:1, border:"none", outline:"none", fontSize:13, color:t.text, background:"transparent", fontFamily:"inherit" }}/>
+              <input type="password" placeholder={ph} style={{ flex:1, border:"none", outline:"none", fontSize:16, color:t.text, background:"transparent", fontFamily:"inherit" }}/>
             </div>
           ))}
           <button style={{ width:"100%", padding:"13px", borderRadius:999, border:"none", background:`linear-gradient(135deg,${GR},${GRD})`, color:"white", fontSize:14, fontWeight:700, cursor:"pointer" }}>Update Password</button>
@@ -2595,7 +2622,7 @@ function HelpScreen({ nav }: { nav:(s:Screen)=>void }) {
             <div style={{ fontSize:12, color:t.sub, marginTop:4 }}>We will get back to you within 24 hours.</div>
             <button onClick={()=>{setMsgSent(false);setMsg("")}} style={{ marginTop:12, padding:"8px 18px", borderRadius:999, border:"none", background:GR, color:"white", fontSize:12, fontWeight:700, cursor:"pointer" }}>Send Another</button>
           </div>:<div>
-            <textarea value={msg} onChange={e=>setMsg(e.target.value)} placeholder="Describe your issue or question..." rows={4} style={{ width:"100%", border:`1.5px solid ${t.border}`, borderRadius:12, padding:"12px 14px", fontSize:13, color:t.text, background:t.inputBg, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, fontFamily:"inherit", resize:"none", outline:"none", boxSizing:"border-box" }}/>
+            <textarea value={msg} onChange={e=>setMsg(e.target.value)} placeholder="Describe your issue or question..." rows={4} style={{ width:"100%", border:`1.5px solid ${t.border}`, borderRadius:12, padding:"12px 14px", fontSize:16, color:t.text, background:t.inputBg, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, fontFamily:"inherit", resize:"none", outline:"none", boxSizing:"border-box" }}/>
             <div style={{ marginTop:10 }}>
               <button onClick={()=>msg.trim()&&setMsgSent(true)} style={{ width:"100%", padding:"13px", borderRadius:999, border:"none", background:`linear-gradient(135deg,${GR},${GRD})`, color:"white", fontSize:14, fontWeight:700, cursor:"pointer", opacity:msg.trim()?1:0.5 }}>Send Message</button>
             </div>
@@ -2625,7 +2652,9 @@ function BottomNav({ active, onSelect }: { active:Screen; onSelect:(s:Screen)=>v
     { id:"rewards", label:tx("rewards",lang), icon:"award" },
   ]
   return <div id="tut-nav" style={{
-    position:"absolute", bottom:`calc(20px + env(safe-area-inset-bottom) / var(--vp-scale, 1))`, left:14, right:14, zIndex:30,
+    // --kb-inset lifts the pill clear of the keyboard instead of letting the
+    // shrinking frame drag it up the screen 1:1.
+    position:"absolute", bottom:`calc(20px + (env(safe-area-inset-bottom) + var(--kb-inset, 0px)) / var(--vp-scale, 1))`, left:14, right:14, zIndex:30,
     display:"flex", alignItems:"center", justifyContent:"space-between",
     padding:"9px 10px", borderRadius:999,
     background:t.navBg, backdropFilter:"blur(30px) saturate(180%)", WebkitBackdropFilter:"blur(30px) saturate(180%)",
@@ -2921,15 +2950,16 @@ export default function App() {
     setScreen("home")
   }
 
+  // Skip and the final CTA both land here. They used to go straight to the goal
+  // sheet, and the flag was only ever written by handleGoalSet — so anyone who
+  // abandoned the goal sheet restarted onboarding on every launch.
   const finishOnboarding = () => {
     patch({ "flags.onboardingComplete": true })
-    setScreen("home")
+    setScreen("goalsetup")
   }
 
   const NO_NAV: Screen[] = ["login","signup","forgot","onboarding","goalsetup","notifications","lesson","profile","settings","security","help"]
-  // >100px of overlap is a keyboard, not an address bar. The pill would
-  // otherwise be shoved up the screen on top of the field being typed into.
-  const showNav = !!user && !NO_NAV.includes(screen) && kbInset < 100
+  const showNav = !!user && !NO_NAV.includes(screen)
   const isAuthScreen = !user
 
   const tourKey = (["home","invest","learn","goals","rewards"] as const).includes(screen as any) ? screen as TourKey : null
@@ -2958,7 +2988,7 @@ export default function App() {
       )
     }
     switch (screen) {
-      case "onboarding":    return <OnboardingScreen onDone={finishOnboarding} onGoalSetup={()=>setScreen("goalsetup")} onTone={setStatusLight}/>
+      case "onboarding":    return <OnboardingScreen onDone={finishOnboarding} onTone={setStatusLight}/>
       case "home":          return <HomeScreen {...homeProps}/>
       case "invest":        return <InvestScreen/>
       case "learn":         return <LearnScreen/>

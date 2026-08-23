@@ -181,7 +181,13 @@ export async function loadProfile(uid:string): Promise<UserProfile | null> {
     return local ? normalizeProfile(local) : null
   }
   const snap = await getDoc(doc(db, "users", uid))
-  if (!snap.exists()) return null
+  // With persistentLocalCache an offline read resolves instead of throwing, and
+  // a cached miss is indistinguishable from a genuinely new user. Treating it as
+  // one let createProfile overwrite the real document once the network returned.
+  if (!snap.exists()) {
+    if (snap.metadata.fromCache) throw new Error("profile unavailable offline")
+    return null
+  }
   const p = normalizeProfile(snap.data() as Partial<UserProfile>)
   writeMirror(uid, p)
   return p
@@ -190,7 +196,9 @@ export async function loadProfile(uid:string): Promise<UserProfile | null> {
 export async function createProfile(uid:string, displayName:string, email:string): Promise<UserProfile> {
   const profile = DEFAULT_PROFILE(displayName, email)
   if (!firebaseConfigured || !db) { writeLS(LS.profile(uid), profile); return profile }
-  await setDoc(doc(db, "users", uid), { ...profile, createdAt: serverTimestamp() })
+  // merge:true so a create racing an existing document tops it up rather than
+  // flattening onboardingComplete and every toursSeen flag back to false.
+  await setDoc(doc(db, "users", uid), { ...profile, createdAt: serverTimestamp() }, { merge: true })
   writeMirror(uid, profile)
   return profile
 }
