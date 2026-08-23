@@ -195,6 +195,10 @@ function useVisualViewport() {
         // resize may change it; a scroll just re-reads the keyboard inset.
         if (cause !== "scroll") document.documentElement.style.setProperty("--vvh", `${Math.round(vv.height)}px`)
         document.documentElement.style.setProperty("--kb-inset", `${overlap}px`)
+        // iOS scrolls the layout viewport when the keyboard opens. The shell is
+        // anchored to the layout viewport, so without this it is pushed up off
+        // the top of the screen by exactly offsetTop.
+        document.documentElement.style.setProperty("--vv-top", `${Math.round(vv.offsetTop)}px`)
         setKbInset(overlap)
       })
     }
@@ -225,6 +229,32 @@ function useVisualViewport() {
     }
   }, [])
   return kbInset
+}
+
+/** ?vp=1 pins a live readout over the app so the numbers come from the device
+ *  instead of from guesswork. Absent from every normal load. */
+const DEBUG_VP = typeof window !== "undefined" && window.location.search.includes("vp=1")
+
+function ViewportProbe({ kbInset, scale }: { kbInset:number; scale:number }) {
+  const [n, setN] = useState(0)
+  useEffect(()=>{
+    const id = setInterval(()=>setN(v=>v+1), 250)
+    return ()=>clearInterval(id)
+  }, [])
+  const vv = typeof window !== "undefined" ? window.visualViewport : null
+  const rows: [string,string|number][] = [
+    ["tick", n],
+    ["innerH", typeof window !== "undefined" ? window.innerHeight : 0],
+    ["vv.h", vv ? Math.round(vv.height) : "none"],
+    ["vv.top", vv ? Math.round(vv.offsetTop) : "none"],
+    ["vv.scale", vv ? vv.scale.toFixed(2) : "none"],
+    ["scrollY", typeof window !== "undefined" ? Math.round(window.scrollY) : 0],
+    ["kbInset", kbInset],
+    ["scale", scale],
+  ]
+  return <div style={{ position:"absolute", top:60, left:8, zIndex:999, background:"rgba(0,0,0,0.82)", color:"#7CFFB2", font:"11px/1.5 monospace", padding:"8px 10px", borderRadius:8, pointerEvents:"none" }}>
+    {rows.map(([k,v])=><div key={k}>{k}: {v}</div>)}
+  </div>
 }
 
 // ─── Progression ─────────────────────────────────────────────────────────────
@@ -2657,9 +2687,7 @@ function BottomNav({ active, onSelect }: { active:Screen; onSelect:(s:Screen)=>v
     { id:"rewards", label:tx("rewards",lang), icon:"award" },
   ]
   return <div id="tut-nav" style={{
-    // --kb-inset lifts the pill clear of the keyboard instead of letting the
-    // shrinking frame drag it up the screen 1:1.
-    position:"absolute", bottom:`calc(20px + (env(safe-area-inset-bottom) + var(--kb-inset, 0px)) / var(--vp-scale, 1))`, left:14, right:14, zIndex:30,
+    position:"absolute", bottom:`calc(20px + env(safe-area-inset-bottom) / var(--vp-scale, 1))`, left:14, right:14, zIndex:30,
     display:"flex", alignItems:"center", justifyContent:"space-between",
     padding:"9px 10px", borderRadius:999,
     background:t.navBg, backdropFilter:"blur(30px) saturate(180%)", WebkitBackdropFilter:"blur(30px) saturate(180%)",
@@ -3023,9 +3051,12 @@ export default function App() {
     <ThCtx.Provider value={themeValue}>
       <AppCtx.Provider value={{ uid, profile, patch, holdings, buy, logOut, isDemo }}>
         <div style={{
-          minHeight:"100dvh", display:"flex", flexDirection:"column", alignItems:"center",
+          position:"fixed", top:0, left:0, right:0,
+          height:"var(--vvh, 100dvh)",
+          transform:"translateY(var(--vv-top, 0px))",
+          display:"flex", flexDirection:"column", alignItems:"center",
           justifyContent:"flex-start", gap:0,
-          background: t.frame, padding:0, position:"relative", overflow:"hidden", transition:"background 0.4s ease",
+          background: t.frame, padding:0, overflow:"hidden", transition:"background 0.4s ease",
         }}>
           <div ref={frameRef} style={{
             position:"relative",
@@ -3054,6 +3085,7 @@ export default function App() {
             </div>
 
             {showNav && <BottomNav active={screen} onSelect={setScreen}/>}
+            {DEBUG_VP && <ViewportProbe kbInset={kbInset} scale={scale}/>}
             {showTour && tour && tourKey && (
               <TutorialOverlay steps={tour} frameRef={frameRef} scale={scale} onDone={()=>patch({ [`flags.toursSeen.${tourKey}`]: true, "stats.points": (profile?.stats?.points ?? 0) + PTS_TOUR, "stats.level": progression((profile?.stats?.points ?? 0) + PTS_TOUR).level })}/>
             )}
