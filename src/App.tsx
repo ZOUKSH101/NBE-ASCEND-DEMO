@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useLayoutEffect, useCallback, createContext, useContext } from "react"
+import { useState, useRef, useEffect, useCallback, createContext, useContext } from "react"
 import { buildSystemPrompt } from "./lib/acsendPrompt"
 import { askAcsend, llmConfigured } from "./lib/llm"
 import { useAuth, friendlyAuthError, type SessionUser } from "./lib/useAuth"
@@ -137,6 +137,10 @@ const DESIGN_WIDTH = 390
 /** Widest the app column is allowed to get. Past this it would stretch a
  *  390px layout across a desktop window rather than read as an app. */
 const MAX_WIDTH = 560
+
+/** Gap between the bottom of the screen and the bottom of the nav pill, in px.
+ *  The home-indicator inset is added on top of this. One number, tune here. */
+const NAV_GAP = 20
 
 const measure = () => {
   if (typeof window === "undefined") return { scale:1, width:DESIGN_WIDTH }
@@ -2991,32 +2995,10 @@ export default function App() {
   const NO_NAV: Screen[] = ["login","signup","forgot","onboarding","goalsetup","notifications","lesson","profile","settings","security","help"]
   const showNav = !!user && !NO_NAV.includes(screen)
 
-  // The pill's position is assigned in pixels from a live measurement of the
-  // visible viewport, rather than inherited from a box that other rules move.
-  // top = bottom of what the user can see, minus the pill, minus the gap.
-  useLayoutEffect(()=>{
-    const el = navRef.current
-    if (!el) return
-    const place = () => {
-      const vv = window.visualViewport
-      const visibleH = vv ? vv.height : window.innerHeight
-      const visibleTop = vv ? vv.offsetTop : 0
-      const safe = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--safe-bottom")) || 0
-      el.style.top = `${Math.round(visibleTop + visibleH - el.offsetHeight - 20 - safe)}px`
-    }
-    place()
-    const id = setInterval(place, 200)
-    const vv = window.visualViewport
-    vv?.addEventListener("resize", place)
-    vv?.addEventListener("scroll", place)
-    window.addEventListener("resize", place)
-    return ()=>{
-      clearInterval(id)
-      vv?.removeEventListener("resize", place)
-      vv?.removeEventListener("scroll", place)
-      window.removeEventListener("resize", place)
-    }
-  }, [showNav, screen, kbInset])
+  // The pill is pinned by CSS at a fixed distance above the bottom of the
+  // screen (NAV_GAP). position:fixed anchors to the layout viewport, which
+  // neither the keyboard nor the collapsing address bar moves — so there is
+  // nothing left to measure, poll, or drift.
 
   const isAuthScreen = !user
 
@@ -3076,7 +3058,7 @@ export default function App() {
     <ThCtx.Provider value={themeValue}>
       <AppCtx.Provider value={{ uid, profile, patch, holdings, buy, logOut, isDemo }}>
         <div style={{
-          minHeight:"100dvh", display:"flex", flexDirection:"column", alignItems:"center",
+          height:"100dvh", minHeight:"100dvh", display:"flex", flexDirection:"column", alignItems:"center",
           justifyContent:"flex-start", gap:0,
           background: t.frame, padding:0, position:"relative", overflow:"hidden", transition:"background 0.4s ease",
         }}>
@@ -3086,7 +3068,12 @@ export default function App() {
             // proportional on a 320px SE and a 430px Pro Max alike.
             zoom: scale,
             width:"100%",
-            height: `calc(var(--vvh, 100dvh) / ${scale})`,
+            // Reverted from calc(var(--vvh) / scale). --vvh froze whenever the
+            // change came from a scroll, so the wrapper grew with 100dvh while
+            // the frame stayed short and the wrapper's own gradient showed
+            // through underneath — the pale block at the bottom of the screen.
+            // Wrapper and frame now read the same unit and cannot disagree.
+            height: `calc(100dvh / ${scale})`,
             // A wide window gets the same column, centred and capped, rather
             // than a 390px layout stretched across it.
             maxWidth: MAX_WIDTH,
@@ -3113,6 +3100,9 @@ export default function App() {
           </div>
           {showNav && <div ref={navRef} style={{
             position:"fixed", left:"50%", transform:"translateX(-50%)",
+            // Fixed distance from the bottom of the screen, plus the home
+            // indicator. Not derived from visualViewport, so nothing shifts it.
+            bottom:`calc(${NAV_GAP}px + env(safe-area-inset-bottom, 0px))`,
             width:`calc(min(100vw, ${MAX_WIDTH}px) - 28px)`, zIndex:60, pointerEvents:"auto",
           }}>
             <BottomNav active={screen} onSelect={setScreen}/>
