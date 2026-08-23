@@ -1,6 +1,12 @@
 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
 @import 'tailwindcss';
 
+:root {
+  /* Read in JS to place the nav pill in absolute pixels. env() is not
+     otherwise reachable from script. */
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
 html, body, #root {
   min-height: 100%;
   margin: 0;

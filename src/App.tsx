@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, createContext, useContext } from "react"
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, createContext, useContext } from "react"
 import { buildSystemPrompt } from "./lib/acsendPrompt"
 import { askAcsend, llmConfigured } from "./lib/llm"
 import { useAuth, friendlyAuthError, type SessionUser } from "./lib/useAuth"
@@ -195,10 +195,6 @@ function useVisualViewport() {
         // resize may change it; a scroll just re-reads the keyboard inset.
         if (cause !== "scroll") document.documentElement.style.setProperty("--vvh", `${Math.round(vv.height)}px`)
         document.documentElement.style.setProperty("--kb-inset", `${overlap}px`)
-        // iOS scrolls the layout viewport when the keyboard opens. The shell is
-        // anchored to the layout viewport, so without this it is pushed up off
-        // the top of the screen by exactly offsetTop.
-        document.documentElement.style.setProperty("--vv-top", `${Math.round(vv.offsetTop)}px`)
         setKbInset(overlap)
       })
     }
@@ -2687,7 +2683,7 @@ function BottomNav({ active, onSelect }: { active:Screen; onSelect:(s:Screen)=>v
     { id:"rewards", label:tx("rewards",lang), icon:"award" },
   ]
   return <div id="tut-nav" style={{
-    position:"absolute", bottom:`calc(20px + env(safe-area-inset-bottom) / var(--vp-scale, 1))`, left:14, right:14, zIndex:30,
+    position:"relative", zIndex:30,
     display:"flex", alignItems:"center", justifyContent:"space-between",
     padding:"9px 10px", borderRadius:999,
     background:t.navBg, backdropFilter:"blur(30px) saturate(180%)", WebkitBackdropFilter:"blur(30px) saturate(180%)",
@@ -2865,6 +2861,7 @@ export default function App() {
   const [, setStatusLight] = useState(false)
   const { scale } = useViewport()
   const kbInset = useVisualViewport()
+  const navRef = useRef<HTMLDivElement>(null)
   const frameRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
@@ -2993,6 +2990,34 @@ export default function App() {
 
   const NO_NAV: Screen[] = ["login","signup","forgot","onboarding","goalsetup","notifications","lesson","profile","settings","security","help"]
   const showNav = !!user && !NO_NAV.includes(screen)
+
+  // The pill's position is assigned in pixels from a live measurement of the
+  // visible viewport, rather than inherited from a box that other rules move.
+  // top = bottom of what the user can see, minus the pill, minus the gap.
+  useLayoutEffect(()=>{
+    const el = navRef.current
+    if (!el) return
+    const place = () => {
+      const vv = window.visualViewport
+      const visibleH = vv ? vv.height : window.innerHeight
+      const visibleTop = vv ? vv.offsetTop : 0
+      const safe = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--safe-bottom")) || 0
+      el.style.top = `${Math.round(visibleTop + visibleH - el.offsetHeight - 20 - safe)}px`
+    }
+    place()
+    const id = setInterval(place, 200)
+    const vv = window.visualViewport
+    vv?.addEventListener("resize", place)
+    vv?.addEventListener("scroll", place)
+    window.addEventListener("resize", place)
+    return ()=>{
+      clearInterval(id)
+      vv?.removeEventListener("resize", place)
+      vv?.removeEventListener("scroll", place)
+      window.removeEventListener("resize", place)
+    }
+  }, [showNav, screen, kbInset])
+
   const isAuthScreen = !user
 
   const tourKey = (["home","invest","learn","goals","rewards"] as const).includes(screen as any) ? screen as TourKey : null
@@ -3051,12 +3076,9 @@ export default function App() {
     <ThCtx.Provider value={themeValue}>
       <AppCtx.Provider value={{ uid, profile, patch, holdings, buy, logOut, isDemo }}>
         <div style={{
-          position:"fixed", top:0, left:0, right:0,
-          height:"var(--vvh, 100dvh)",
-          transform:"translateY(var(--vv-top, 0px))",
-          display:"flex", flexDirection:"column", alignItems:"center",
+          minHeight:"100dvh", display:"flex", flexDirection:"column", alignItems:"center",
           justifyContent:"flex-start", gap:0,
-          background: t.frame, padding:0, overflow:"hidden", transition:"background 0.4s ease",
+          background: t.frame, padding:0, position:"relative", overflow:"hidden", transition:"background 0.4s ease",
         }}>
           <div ref={frameRef} style={{
             position:"relative",
@@ -3084,12 +3106,17 @@ export default function App() {
               {renderScreen()}
             </div>
 
-            {showNav && <BottomNav active={screen} onSelect={setScreen}/>}
             {DEBUG_VP && <ViewportProbe kbInset={kbInset} scale={scale}/>}
             {showTour && tour && tourKey && (
               <TutorialOverlay steps={tour} frameRef={frameRef} scale={scale} onDone={()=>patch({ [`flags.toursSeen.${tourKey}`]: true, "stats.points": (profile?.stats?.points ?? 0) + PTS_TOUR, "stats.level": progression((profile?.stats?.points ?? 0) + PTS_TOUR).level })}/>
             )}
           </div>
+          {showNav && <div ref={navRef} style={{
+            position:"fixed", left:"50%", transform:"translateX(-50%)",
+            width:`calc(min(100vw, ${MAX_WIDTH}px) - 28px)`, zIndex:60, pointerEvents:"auto",
+          }}>
+            <BottomNav active={screen} onSelect={setScreen}/>
+          </div>}
         </div>
       </AppCtx.Provider>
     </ThCtx.Provider>
