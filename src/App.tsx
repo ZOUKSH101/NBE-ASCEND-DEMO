@@ -1627,11 +1627,17 @@ function LearnScreen() {
   const [input, setInput] = useState("")
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string|null>(null)
-  const bottomRef = useRef<HTMLDivElement>(null)
+  const chatRef = useRef<HTMLDivElement>(null)
   const abortRef = useRef<AbortController|null>(null)
   const live = llmConfigured()
 
-  useEffect(()=>{ bottomRef.current?.scrollIntoView({ behavior:"smooth" }) },[messages, busy])
+  // scrollIntoView walks up and scrolls EVERY scrollable ancestor, including
+  // the document — inside an overflow:hidden shell that pans the whole layout
+  // viewport and nothing can pan it back. Scroll the chat pane and nothing else.
+  useEffect(()=>{
+    const el = chatRef.current
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior:"smooth" })
+  },[messages, busy])
   useEffect(()=>()=>abortRef.current?.abort(), [])
 
   const send = async (text:string) => {
@@ -1685,7 +1691,7 @@ function LearnScreen() {
       </div>
     </div>
 
-    <div id="tut-learn-chat" style={{ flex:1, overflowY:"auto", padding:"16px" }}>
+    <div id="tut-learn-chat" ref={chatRef} style={{ flex:1, overflowY:"auto", padding:"16px", overscrollBehavior:"contain" as const }}>
       {messages.map((msg,i)=><div key={i} style={{ display:"flex", justifyContent:msg.role==="user"?"flex-end":"flex-start", marginBottom:12 }}>
         {msg.role==="assistant"&&<div style={{ width:32, height:32, borderRadius:16, background:`linear-gradient(135deg,${GR},${GRD})`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, marginRight:8, alignSelf:"flex-end" }}>
           <svg viewBox="0 0 20 20" width={16} height={16} fill="white"><path d="M10 1.5L1.5 7v12h6V13h5v6h6V7L10 1.5z"/></svg>
@@ -1713,7 +1719,6 @@ function LearnScreen() {
           {SUGGESTIONS.map(q=><button key={q} onClick={()=>send(q)} style={{ padding:"9px 15px", borderRadius:999, border:`1px solid ${t.strokeS}`, background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, color:t.brand, fontSize:12, fontWeight:600, cursor:"pointer", textAlign:"left" as const, lineHeight:1.4, fontFamily:"inherit" }}>{q}</button>)}
         </div>
       </div>}
-      <div ref={bottomRef}/>
     </div>
 
     <div style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, padding:"12px 16px 16px", borderTop:`1px solid ${t.border}`, flexShrink:0 }}>
