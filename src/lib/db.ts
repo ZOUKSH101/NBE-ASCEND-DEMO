@@ -12,7 +12,7 @@ import { db, firebaseConfigured } from "./firebase"
 
 export type FunnelStage =
   | "curious" | "understands" | "account_opened"
-  | "first_subscription" | "recurring" | "limit_raised"
+  | "first_subscription" | "recurring" | "second_product"
 
 export type TourKey = "home" | "invest" | "learn" | "goals" | "rewards"
 
@@ -32,15 +32,6 @@ export interface UserPrefs {
   notifications: { reminders:boolean; certs:boolean; growth:boolean }
 }
 
-export interface UserLimits {
-  /** EGP the user may still commit this cycle. */
-  remaining: number
-  /** Cap the cycle started with. */
-  cycleCap: number
-  /** ISO date, e.g. "2026-09-01". */
-  resetDate: string
-}
-
 export interface UserStats { points:number; level:number; streakDays:number; lastActive?:string }
 
 export interface UserProfile {
@@ -49,7 +40,6 @@ export interface UserProfile {
   initials: string
   flags: UserFlags
   prefs: UserPrefs
-  limits: UserLimits
   stats: UserStats
 }
 
@@ -75,26 +65,6 @@ export interface HoldingDoc {
   status: "active" | "pending" | "matured"
   purchasedAt: string
   maturesAt?: string
-}
-
-/** ISO date one month on from `from`. */
-export function nextCycleDate(from = new Date()): string {
-  const d = new Date(from.getFullYear(), from.getMonth() + 1, 1)
-  return d.toISOString().slice(0,10)
-}
-
-/**
- * The cycle cap is worthless without a rollover — spend it once and the user is
- * locked out forever. Returns the patch to apply when the reset date has passed.
- */
-export function cycleRollover(p:UserProfile|null): Record<string,unknown> | null {
-  if (!p?.limits?.resetDate) return null
-  const due = new Date(p.limits.resetDate).getTime()
-  if (!Number.isFinite(due) || Date.now() < due) return null
-  return {
-    "limits.remaining": p.limits.cycleCap,
-    "limits.resetDate": nextCycleDate(),
-  }
 }
 
 /** Avatar initials for a full name. Exported so a repaired name can rebuild
@@ -127,7 +97,6 @@ export const DEFAULT_PROFILE = (displayName:string, email:string): UserProfile =
     reduceMotion: false,
     notifications: { reminders:true, certs:true, growth:true },
   },
-  limits: { remaining: 50000, cycleCap: 50000, resetDate: nextCycleDate() },
   stats: { points: 0, level: 1, streakDays: 0 },
 })
 
@@ -171,7 +140,6 @@ export function normalizeProfile(raw:Partial<UserProfile>|null|undefined, displa
               toursSeen: { ...d.flags.toursSeen, ...((raw?.flags as any)?.toursSeen ?? {}) } },
     prefs:  { ...d.prefs,  ...(raw?.prefs  ?? {}),
               notifications: { ...d.prefs.notifications, ...((raw?.prefs as any)?.notifications ?? {}) } },
-    limits: { ...d.limits, ...(raw?.limits ?? {}) },
     stats:  { ...d.stats,  ...(raw?.stats  ?? {}) },
   }
 }

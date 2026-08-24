@@ -5,7 +5,7 @@ import { useAuth, friendlyAuthError, type SessionUser } from "./lib/useAuth"
 import { firebaseConfigured } from "./lib/firebase"
 import {
   loadProfile, createProfile, patchProfile, loadGoals, addGoal,
-  loadHoldings, addHolding, describeHoldings, DEFAULT_PROFILE, initialsOf, isEmailPrefixName, readMirror, mirrorProfile, cycleRollover,
+  loadHoldings, addHolding, describeHoldings, DEFAULT_PROFILE, initialsOf, isEmailPrefixName, readMirror, mirrorProfile,
   type UserProfile, type GoalDoc, type HoldingDoc, type TourKey,
 } from "./lib/db"
 import logoImg from "./imports/ChatGPT_Image_Aug_20__2026__12_06_04_PM.png"
@@ -1282,7 +1282,6 @@ function SubscribeSheet({ product, isFund, onClose }: {
   const [err, setErr] = useState<string|null>(null)
   const submitting = useRef(false)
 
-  const remaining = profile?.limits?.remaining ?? 0
   const raw = amount.trim()
   // Digits only. Stripping non-digits silently turned "-5000" into 5000.
   const wellFormed = /^\d+$/.test(raw)
@@ -1292,7 +1291,6 @@ function SubscribeSheet({ product, isFund, onClose }: {
   const validate = () => {
     if (!wellFormed || !Number.isFinite(value)) return "Enter the amount in whole Egyptian pounds, digits only."
     if (value < product.min) return `Minimum for ${product.name} is EGP ${product.min.toLocaleString()}.`
-    if (value > remaining)   return `That is over your remaining limit of EGP ${remaining.toLocaleString()}. Invest the remainder now, or schedule the balance next cycle.`
     return null
   }
 
@@ -1318,7 +1316,6 @@ function SubscribeSheet({ product, isFund, onClose }: {
         ...(matures ? { maturesAt: localISO(matures) } : {}),
       })
       patch({
-        "limits.remaining": Math.max(0, remaining - value),
         "flags.hasSubscribed": true,
         "flags.funnelStage": "first_subscription",
         "stats.points": (profile?.stats?.points ?? 0) + PTS_INVEST,
@@ -1357,13 +1354,8 @@ function SubscribeSheet({ product, isFund, onClose }: {
             style={{ flex:1, border:"none", outline:"none", background:"transparent", fontSize:22, fontWeight:800, color:t.text, fontFamily:"inherit", minWidth:0 }}/>
         </div>
 
-        <div style={{ display:"flex", justifyContent:"space-between", fontSize:11.5, color:t.sub, marginBottom:14 }}>
-          <span>Remaining limit this cycle</span>
-          <span style={{ fontWeight:700, color:t.text }}>EGP {remaining.toLocaleString()}</span>
-        </div>
-
         <div style={{ display:"flex", gap:8, marginBottom:18 }}>
-          {[product.min, 10000, 25000].filter((v,i,a)=>a.indexOf(v)===i && v<=remaining).map(v=>(
+          {[product.min, 10000, 25000].filter((v,i,a)=>a.indexOf(v)===i).map(v=>(
             <button key={v} onClick={()=>{ setAmount(String(v)); setErr(null) }} style={{ flex:1, padding:"10px 0", borderRadius:999, border:`1px solid ${t.stroke}`, background:t.chip, color:t.text, fontSize:12, fontWeight:700, cursor:"pointer", fontFamily:"inherit" }}>
               {v.toLocaleString()}
             </button>
@@ -1372,9 +1364,6 @@ function SubscribeSheet({ product, isFund, onClose }: {
 
         {err && <div style={{ background:`${ERR}16`, border:`1px solid ${ERR}44`, borderRadius:16, padding:"12px 14px", marginBottom:14, fontSize:12.5, color:t.text, lineHeight:1.6 }}>
           {err}
-          {remaining === 0 && <div style={{ color:t.sub, marginTop:7 }}>
-            Youth accounts have a cap on how much can be committed per cycle. Yours refills to EGP {(profile?.limits?.cycleCap ?? 0).toLocaleString()} on {profile?.limits?.resetDate ?? "the next cycle"}.
-          </div>}
         </div>}
 
         <div style={{ display:"flex", gap:10 }}>
@@ -1392,7 +1381,6 @@ function SubscribeSheet({ product, isFund, onClose }: {
           [isFund?"Average return":"Interest rate", `${product.rate}% per year`],
           [isFund?"Suggested horizon":"Duration", product.dur],
           [isFund?"Estimated first-year gain":"Profit at maturity", `EGP ${profit.toLocaleString()}`],
-          ["Limit after this", `EGP ${Math.max(0, remaining - (Number.isFinite(value) ? value : 0)).toLocaleString()}`],
         ].map(([k,v],i,a)=>(
           <div key={k} style={{ display:"flex", justifyContent:"space-between", gap:12, padding:"11px 0", borderBottom:i<a.length-1?`1px solid ${t.border}`:"none" }}>
             <span style={{ fontSize:12.5, color:t.sub }}>{k}</span>
@@ -1844,8 +1832,6 @@ function LearnScreen() {
       const system = buildSystemPrompt({
         funnel_stage: profile?.flags?.funnelStage ?? "curious",
         holdings: describeHoldings(holdings),
-        limit_remaining: profile ? `EGP ${profile.limits.remaining.toLocaleString()}` : "",
-        reset_date: profile?.limits?.resetDate ?? "",
       })
       const turns = history
         .filter((m,i)=>!(i===0 && m.role==="assistant"))   // drop the canned greeting
@@ -2533,11 +2519,6 @@ function buildNotifs(holdings:HoldingDoc[], profile:UserProfile|null): Notif[] {
       body:"Goals turn saving into steps you can tick off. It takes about a minute in the Goals tab.",
       time:"Today", read:false,
     }] : []),
-    ...(profile && profile.limits.remaining < profile.limits.cycleCap ? [{
-      id:202, type:"certificate" as NotifType, title:"Investment limit updated",
-      body:`EGP ${profile.limits.remaining.toLocaleString()} of your EGP ${profile.limits.cycleCap.toLocaleString()} limit is still available. Resets ${profile.limits.resetDate}.`,
-      time:"Today", read:true,
-    }] : []),
   ]
 }
 
@@ -2622,7 +2603,6 @@ function ProfileScreen({ nav }: { nav:(s:Screen)=>void }) {
       <SSection label="Your money">
         <SRow icon="wallet" iconColor={GR} label="Total invested" sub={`Across ${holdings.length} ${holdings.length===1?"holding":"holdings"}`} right={<span style={{ fontSize:14, fontWeight:800, color:t.text }}>EGP {invested.toLocaleString()}</span>}/>
         <Divider/>
-        <SRow icon="chart" iconColor={GD} label="Remaining limit" sub={`Resets ${profile?.limits?.resetDate ?? "—"}`} right={<span style={{ fontSize:14, fontWeight:800, color:t.gold }}>EGP {(profile?.limits?.remaining ?? 0).toLocaleString()}</span>}/>
       </SSection>
 
       <SSection label="Preferences">
@@ -3036,11 +3016,6 @@ export default function App() {
         if (cancelled) return
         // Show the app as soon as the profile is known — goals and holdings are
         // two more round trips and nothing on first paint depends on them.
-        const rollover = cycleRollover(p)
-        if (rollover) {
-          p = { ...p, limits: { ...p.limits, remaining:p.limits.cycleCap, resetDate:String(rollover["limits.resetDate"]) } }
-          patchProfile(user.uid, rollover).catch(()=>{ /* applied locally regardless */ })
-        }
         const streak = streakUpdate(p)
         if (streak) {
           p = { ...p, stats: { ...p.stats, streakDays: streak["stats.streakDays"] as number, lastActive: streak["stats.lastActive"] as string } }

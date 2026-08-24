@@ -118,9 +118,15 @@ await type(amountInput(), "999")
 await click(btn("Continue"), 250)
 check("one below the minimum is rejected", /Minimum for/i.test(text()))
 
+// The per-cycle investment cap was removed: a very large amount must now sail
+// through to review rather than being blocked.
 await type(amountInput(), "99999999")
 await click(btn("Continue"), 250)
-check("above the remaining limit is rejected", /over your remaining limit/i.test(text()))
+check("a very large amount is NOT capped", /Confirm your subscription/i.test(text()), text().slice(0,80))
+check("no limit language anywhere in the flow", !/remaining limit|per cycle|Limit after this/i.test(text()))
+// Back out without committing — the review step's control is "Back", not "Cancel".
+await click(btn("Back"), 300)
+check("Back returns to the amount step", !!amountInput())
 
 // ── ADVERSARIAL: double-submit a valid subscription ────────────────────────
 await type(amountInput(), "1000")
@@ -157,10 +163,9 @@ const avatar = [...document.querySelectorAll("div")].find(d =>
 check("Home avatar is present and tappable", !!avatar)
 await click(avatar, 700)
 const prof = text()
-const remaining = money("Remaining limit")
 const invested  = money("Total invested")
 check("Profile: total invested equals what was committed", invested === 1000, `invested=${invested} :: ${prof.slice(0,80)}`)
-check("Profile: limit decremented exactly once (50,000 - 1,000)", remaining === 49000, `remaining=${remaining}`)
+check("Profile: no remaining-limit row", !/Remaining limit/i.test(prof))
 await click(btn("←") || document.querySelector("button"), 400)
 
 // ── ADVERSARIAL: rapid tab thrash ──────────────────────────────────────────
@@ -218,7 +223,7 @@ check("no undefined anywhere", !/undefined/.test(body), (body.match(/.{0,25}unde
 check("no Infinity anywhere", !/Infinity/.test(body))
 check("no unformatted 6-digit money", !/EGP \d{5,}(?!,)/.test(body), (body.match(/EGP \d{5,}/) || [""])[0])
 
-// ── ROUND 2: drain the limit, then attack the boundary ─────────────────────
+// ── ROUND 2: large and repeated subscriptions must not be blocked ──────────
 await click(btnExact("Invest"), 400)
 const buyExact = async (amt) => {
   await click(btn("Invest Now"), 350)
@@ -229,16 +234,16 @@ const buyExact = async (amt) => {
   else { await click(btn("Cancel"), 250) }
   return ok
 }
-await buyExact(49000)                                  // exactly the remainder
+await buyExact(49000)
 await click(btnExact("Home"), 400)
-check("limit can be spent to exactly zero", /EGP 50,000\s*Invested/.test(text()), (text().match(/EGP [\d,]+\s*Invested/)||[""])[0])
+check("a large subscription goes through", /EGP 50,000\s*Invested/.test(text()), (text().match(/EGP [\d,]+\s*Invested/)||[""])[0])
 
 await click(btnExact("Invest"), 400)
 const overrun = await buyExact(1000)
-check("cannot invest once the limit is exhausted", !overrun)
+check("can keep investing past the old 50,000 cap", overrun)
 
 await click(btnExact("Home"), 400)
-check("limit never goes negative", !/-EGP|EGP -/.test(text()))
+check("totals never go negative", !/-EGP|EGP -/.test(text()))
 const homePcts = [...text().matchAll(/(\d{1,3})%/g)].map(m => parseInt(m[1]))
 check("goal capped at 100%, never above", homePcts.every(p => p <= 100), homePcts.join(","))
 
@@ -280,11 +285,13 @@ const replay = btn("Replay all walkthroughs")
 if (replay) await click(replay, 400)
 check("replay walkthroughs does not crash", text().length > 100)
 
-// ── ROUND 6: an expired cycle must refill, not lock the user out ───────────
+// ── ROUND 6: a legacy profile still carrying `limits` must load cleanly ────
+// Every existing Firestore document has a limits map on it. Removing the cap
+// must not make those documents unreadable, and none of it may reach the UI.
 const uidK = [...Array(window.localStorage.length).keys()].map(i=>window.localStorage.key(i)).find(k=>k&&k.endsWith(":profile"))
 if (uidK) {
   const cur = JSON.parse(window.localStorage.getItem(uidK))
-  cur.limits = { remaining:0, cycleCap:50000, resetDate:"2020-01-01" }   // long expired
+  cur.limits = { remaining:0, cycleCap:50000, resetDate:"2020-01-01" }   // stale, from the old schema
   window.localStorage.setItem(uidK, JSON.stringify(cur))
   window.localStorage.setItem(uidK.replace(":profile", ":mirror"), JSON.stringify(cur))
 }
@@ -292,13 +299,11 @@ await act(async () => { root.unmount() })
 root = createRoot(document.getElementById("root"))
 await act(async () => { root.render(React.createElement(App)) })
 await settle(900)
+check("legacy limits map does not break the load", text().length > 100)
 const av3 = [...document.querySelectorAll("div")].find(d =>
   /^[A-Z]{2}$/.test((d.textContent||"").trim()) && /border-radius:\s*19px/.test(d.getAttribute("style")||""))
 if (av3) await click(av3, 600)
-const refilled = money("Remaining limit")
-check("expired cycle refills to the cap", refilled === 50000, `remaining=${refilled}`)
-check("reset date rolled forward past today",
-  !/Resets 2020-01-01/.test(text()), (text().match(/Resets [\d-]+/)||[""])[0])
+check("Profile shows no limit row for a legacy profile", !/Remaining limit|Resets 2020/i.test(text()))
 
 const real = errors.filter(e => !/not wrapped in act|useLayoutEffect|Warning: ReactDOM/i.test(e))
 check("no React errors across the assault", real.length === 0, real.slice(0, 2).join(" | "))
