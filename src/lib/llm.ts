@@ -5,7 +5,10 @@ const env = import.meta.env
 const API_KEY = (env.VITE_GEMINI_API_KEY ?? "").trim()
 const MODEL   = (env.VITE_GEMINI_MODEL ?? "gemini-3.6-flash").trim()
 const PROXY   = (env.VITE_LLM_PROXY_URL ?? "").trim()
-const MAX_TOKENS  = Number(env.VITE_LLM_MAX_TOKENS ?? 500)
+// Raised from 500. Flash models think by default and those tokens are billed
+// against maxOutputTokens, so a tight cap truncated replies mid-sentence.
+// thinkingBudget:0 below is the real fix; this is headroom on top of it.
+const MAX_TOKENS  = Number(env.VITE_LLM_MAX_TOKENS ?? 1200)
 const TEMPERATURE = Number(env.VITE_LLM_TEMPERATURE ?? 0.4)
 
 /** True when the assistant can actually reach the model. */
@@ -66,7 +69,15 @@ async function viaGemini(system:string, turns:ChatTurn[], signal?:AbortSignal) {
         role: t.role === "assistant" ? "model" : "user",
         parts: [{ text: t.content }],
       })),
-      generationConfig:{ maxOutputTokens:MAX_TOKENS, temperature:TEMPERATURE },
+      generationConfig:{
+        maxOutputTokens:MAX_TOKENS,
+        temperature:TEMPERATURE,
+        // Gemini 2.5+ Flash enables thinking by default and counts those tokens
+        // against maxOutputTokens. With it on, the model spent the budget
+        // reasoning and the visible answer was cut off mid-sentence. Acsend
+        // answers in 2-4 sentences from a fixed catalogue; it needs no thinking.
+        thinkingConfig:{ thinkingBudget:0 },
+      },
     }),
     signal,
   })
@@ -79,7 +90,17 @@ async function viaGemini(system:string, turns:ChatTurn[], signal?:AbortSignal) {
     throw new LlmError("Gemini blocked that response. Try rephrasing the question.")
   }
   const text = (cand?.content?.parts ?? []).map((p:any)=>p.text ?? "").join("").trim()
-  if (!text) throw new LlmError("Gemini returned an empty response.")
+  if (!text) {
+    // A MAX_TOKENS finish with no text means the budget went entirely on
+    // thinking. Say so rather than showing "empty response".
+    if (cand?.finishReason === "MAX_TOKENS") {
+      throw new LlmError("The reply hit the token limit before any text came back. Raise VITE_LLM_MAX_TOKENS.")
+    }
+    throw new LlmError("Gemini returned an empty response.")
+  }
+  // Truncated but non-empty: return what came back rather than throwing it
+  // away, and mark it so a cut-off answer is never mistaken for a complete one.
+  if (cand?.finishReason === "MAX_TOKENS") return text + " […truncated]"
   return text
 }
 

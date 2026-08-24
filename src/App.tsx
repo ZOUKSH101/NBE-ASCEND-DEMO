@@ -797,6 +797,30 @@ const FUNDS: Product[] = [
 ]
 const productByName = (n:string) => [...CERTS, ...FUNDS].find(p => p.name === n) ?? null
 
+/**
+ * The CATALOGUE block of Acsend's system prompt, rendered from the same arrays
+ * the Invest screen sells from. Acsend used to carry its own hardcoded product
+ * list, which drifted: it told users the shortest certificate was 3 years while
+ * Invest was selling a 1-year one. One array, one answer.
+ */
+function catalogueForPrompt(): string {
+  const shortest = Math.min(...CERTS.map(c => termYears(c.dur)))
+  const certLines = CERTS.map(c =>
+    `- ${c.name} — ${c.dur}, ${c.rate}% a year fixed, min EGP ${c.min.toLocaleString()}. ${c.access}`)
+  const fundLines = FUNDS.map(f =>
+    `- ${f.name} — ${f.dur}, ${f.rate}% past average (NOT a promise), min EGP ${f.min.toLocaleString()}, ${f.risk.toLowerCase()} risk. ${f.access}`)
+  return [
+    "CATALOGUE — the complete list of what this app sells. Never name a product,",
+    "term, or rate that is not on this list, and never say a term is unavailable",
+    "if it appears here.",
+    "EGP certificates (rate fixed on day one, principal returned at maturity):",
+    ...certLines,
+    `Shortest certificate term available: ${shortest} year${shortest === 1 ? "" : "s"}.`,
+    "Mutual funds (value moves daily, can fall; the % is a historical average):",
+    ...fundLines,
+  ].join("\n")
+}
+
 /* ─── Goal → product plan ────────────────────────────────────────────────────
    These certificates pay simple interest on the principal, so a deposit P at
    rate r held for T years matures at P × (1 + rT). Inverted, the deposit that
@@ -1830,6 +1854,7 @@ function LearnScreen() {
     try {
       // System prompt goes in its own field; only the conversation turns are sent as messages.
       const system = buildSystemPrompt({
+        catalogue: catalogueForPrompt(),
         funnel_stage: profile?.flags?.funnelStage ?? "curious",
         holdings: describeHoldings(holdings),
       })
