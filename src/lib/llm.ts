@@ -5,10 +5,11 @@ const env = import.meta.env
 const API_KEY = (env.VITE_GEMINI_API_KEY ?? "").trim()
 const MODEL   = (env.VITE_GEMINI_MODEL ?? "gemini-3.6-flash").trim()
 const PROXY   = (env.VITE_LLM_PROXY_URL ?? "").trim()
-// Raised from 500. Flash models think by default and those tokens are billed
-// against maxOutputTokens, so a tight cap truncated replies mid-sentence.
-// thinkingBudget:0 below is the real fix; this is headroom on top of it.
-const MAX_TOKENS  = Number(env.VITE_LLM_MAX_TOKENS ?? 1200)
+// Raised from 500. Flash models think by default and those tokens count
+// against maxOutputTokens, so a tight cap spent the whole budget reasoning and
+// truncated the visible reply mid-sentence. Acsend answers in 2-4 sentences;
+// the rest of this is headroom for thinking we cannot turn off.
+const MAX_TOKENS  = Number(env.VITE_LLM_MAX_TOKENS ?? 3000)
 const TEMPERATURE = Number(env.VITE_LLM_TEMPERATURE ?? 0.4)
 
 /** True when the assistant can actually reach the model. */
@@ -69,15 +70,13 @@ async function viaGemini(system:string, turns:ChatTurn[], signal?:AbortSignal) {
         role: t.role === "assistant" ? "model" : "user",
         parts: [{ text: t.content }],
       })),
-      generationConfig:{
-        maxOutputTokens:MAX_TOKENS,
-        temperature:TEMPERATURE,
-        // Gemini 2.5+ Flash enables thinking by default and counts those tokens
-        // against maxOutputTokens. With it on, the model spent the budget
-        // reasoning and the visible answer was cut off mid-sentence. Acsend
-        // answers in 2-4 sentences from a fixed catalogue; it needs no thinking.
-        thinkingConfig:{ thinkingBudget:0 },
-      },
+      // No thinking config is sent on purpose. Gemini 2.5 takes
+      // thinkingConfig.thinkingBudget (a number) and Gemini 3.x takes
+      // thinkingLevel (an enum); sending the wrong one for the model is a hard
+      // 400 INVALID_ARGUMENT, and 3.x cannot switch thinking off entirely in
+      // any case. MAX_TOKENS is sized to cover thinking AND the answer instead,
+      // which is valid on every model.
+      generationConfig:{ maxOutputTokens:MAX_TOKENS, temperature:TEMPERATURE },
     }),
     signal,
   })
