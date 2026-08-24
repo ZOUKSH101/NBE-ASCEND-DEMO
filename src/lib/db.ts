@@ -97,10 +97,22 @@ export function cycleRollover(p:UserProfile|null): Record<string,unknown> | null
   }
 }
 
+/** Avatar initials for a full name. Exported so a repaired name can rebuild
+ *  them without duplicating the rule. */
+export const initialsOf = (displayName:string): string =>
+  displayName.trim().split(/\s+/).map(w=>w[0] ?? "").join("").slice(0,2).toUpperCase() || "NB"
+
+/** True when a stored name is really just the local part of the email — the
+ *  signature of an account created before signUp waited for updateProfile. */
+export const isEmailPrefixName = (displayName:string, email:string): boolean => {
+  const local = (email || "").split("@")[0].trim().toLowerCase()
+  return !!local && displayName.trim().toLowerCase() === local
+}
+
 export const DEFAULT_PROFILE = (displayName:string, email:string): UserProfile => ({
   displayName,
   email,
-  initials: displayName.split(" ").map(w=>w[0] ?? "").join("").slice(0,2).toUpperCase() || "NB",
+  initials: initialsOf(displayName),
   flags: {
     onboardingComplete: false,
     firstGoalSet: false,
@@ -181,13 +193,7 @@ export async function loadProfile(uid:string): Promise<UserProfile | null> {
     return local ? normalizeProfile(local) : null
   }
   const snap = await getDoc(doc(db, "users", uid))
-  // With persistentLocalCache an offline read resolves instead of throwing, and
-  // a cached miss is indistinguishable from a genuinely new user. Treating it as
-  // one let createProfile overwrite the real document once the network returned.
-  if (!snap.exists()) {
-    if (snap.metadata.fromCache) throw new Error("profile unavailable offline")
-    return null
-  }
+  if (!snap.exists()) return null
   const p = normalizeProfile(snap.data() as Partial<UserProfile>)
   writeMirror(uid, p)
   return p
@@ -196,9 +202,7 @@ export async function loadProfile(uid:string): Promise<UserProfile | null> {
 export async function createProfile(uid:string, displayName:string, email:string): Promise<UserProfile> {
   const profile = DEFAULT_PROFILE(displayName, email)
   if (!firebaseConfigured || !db) { writeLS(LS.profile(uid), profile); return profile }
-  // merge:true so a create racing an existing document tops it up rather than
-  // flattening onboardingComplete and every toursSeen flag back to false.
-  await setDoc(doc(db, "users", uid), { ...profile, createdAt: serverTimestamp() }, { merge: true })
+  await setDoc(doc(db, "users", uid), { ...profile, createdAt: serverTimestamp() })
   writeMirror(uid, profile)
   return profile
 }

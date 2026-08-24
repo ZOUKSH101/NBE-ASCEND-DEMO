@@ -10,10 +10,21 @@ export interface SessionUser { uid:string; email:string; displayName:string }
 const DEMO_KEY = "nbe:demo-session"
 const DEMO_UID_KEY = "nbe:demo-uid"
 
+/**
+ * The name typed on the sign-up form, held only for the moment it takes the
+ * account to exist. onAuthStateChanged fires the instant
+ * createUserWithEmailAndPassword resolves — before updateProfile has landed —
+ * so u.displayName is still null on that first session. Without this the
+ * fallback below took the email prefix, and createProfile then wrote that
+ * prefix into Firestore as the user's name, permanently.
+ */
+let pendingName = ""
+
 const toSession = (u:User): SessionUser => ({
   uid: u.uid,
   email: u.email ?? "",
-  displayName: u.displayName ?? (u.email ?? "").split("@")[0],
+  // `||` not `??`: Firebase reports a missing display name as "" as well as null.
+  displayName: u.displayName || pendingName || (u.email ?? "").split("@")[0],
 })
 
 /** Random and per-browser, never derived from anything the user typed — two
@@ -77,9 +88,21 @@ export function useAuth() {
 
   const signUp = useCallback(async (email:string, password:string, displayName:string): Promise<SessionUser> => {
     if (!firebaseConfigured || !auth) throw new Error("Account creation is unavailable in this demo build.")
-    const cred = await createUserWithEmailAndPassword(auth, email.trim(), password)
-    if (displayName) await updateProfile(cred.user, { displayName })
-    return { ...toSession(cred.user), displayName: displayName || toSession(cred.user).displayName }
+    // Published before the account exists, so the onAuthStateChanged that fires
+    // mid-signup already carries the real name rather than the email prefix.
+    pendingName = displayName.trim()
+    try {
+      const cred = await createUserWithEmailAndPassword(auth, email.trim(), password)
+      if (pendingName) await updateProfile(cred.user, { displayName: pendingName })
+      // updateProfile mutates the server record; reload pulls it back into the
+      // local User so every later toSession() reads the real name.
+      await cred.user.reload()
+      const session: SessionUser = { ...toSession(cred.user), displayName: pendingName || toSession(cred.user).displayName }
+      setUser(session)
+      return session
+    } finally {
+      pendingName = ""
+    }
   }, [])
 
   const resetPassword = useCallback(async (email:string) => {

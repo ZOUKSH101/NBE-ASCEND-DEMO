@@ -5,7 +5,7 @@ import { useAuth, friendlyAuthError, type SessionUser } from "./lib/useAuth"
 import { firebaseConfigured } from "./lib/firebase"
 import {
   loadProfile, createProfile, patchProfile, loadGoals, addGoal,
-  loadHoldings, addHolding, describeHoldings, DEFAULT_PROFILE, readMirror, mirrorProfile, cycleRollover,
+  loadHoldings, addHolding, describeHoldings, DEFAULT_PROFILE, initialsOf, isEmailPrefixName, readMirror, mirrorProfile, cycleRollover,
   type UserProfile, type GoalDoc, type HoldingDoc, type TourKey,
 } from "./lib/db"
 import logoImg from "./imports/ChatGPT_Image_Aug_20__2026__12_06_04_PM.png"
@@ -797,6 +797,142 @@ const FUNDS: Product[] = [
 ]
 const productByName = (n:string) => [...CERTS, ...FUNDS].find(p => p.name === n) ?? null
 
+/* ─── Goal → product plan ────────────────────────────────────────────────────
+   These certificates pay simple interest on the principal, so a deposit P at
+   rate r held for T years matures at P × (1 + rT). Inverted, the deposit that
+   lands exactly on a target G is G / (1 + rT). A 25,000 goal one year out on
+   the 25% Premium Certificate therefore needs 20,000 in today — the other
+   5,000 is earned, not saved.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+interface GoalPlan {
+  product: Product
+  kind: "certificate" | "fund"
+  /** What to put in now. */
+  deposit: number
+  /** What it is worth at the end of the term. */
+  matures: number
+  /** matures − deposit: the part of the goal the product pays for. */
+  earned: number
+  years: number
+}
+
+/** A saving-only fallback for horizons no product can serve. */
+interface GoalSavePlan { monthly:number; months:number }
+
+const MONTH_MS = 30.44 * 86400000
+
+/** Whole months from now until an ISO date. 0 when absent or already past. */
+function monthsUntil(iso?:string): number {
+  if (!iso) return 0
+  const ms = new Date(iso).getTime() - Date.now()
+  return ms <= 0 ? 0 : Math.floor(ms / MONTH_MS)
+}
+
+const depositFor = (target:number, ratePct:number, years:number) =>
+  Math.ceil(target / (1 + (ratePct / 100) * years))
+
+/**
+ * The cheapest way to land on `target` by `monthsLeft`. Certificates first —
+ * they are the only products that can promise the number — and among those the
+ * one asking for the smallest deposit, since that is the one doing most of the
+ * work. Returns null when nothing fits, and the caller falls back to saving.
+ */
+function planForGoal(target:number, monthsLeft:number): GoalPlan | null {
+  if (target <= 0 || monthsLeft <= 0) return null
+  const horizonYears = monthsLeft / 12
+
+  const fits: GoalPlan[] = []
+  for (const p of CERTS) {
+    const years = termYears(p.dur)
+    // A certificate cannot be redeemed early, so the whole term has to finish
+    // before the goal date — a 3-year certificate is useless for a 2-year goal.
+    if (years > horizonYears) continue
+    const deposit = depositFor(target, p.rate, years)
+    if (deposit < p.min) continue
+    fits.push({ product:p, kind:"certificate", deposit, matures:target, earned:target-deposit, years })
+  }
+  if (fits.length) return fits.sort((a,b)=>a.deposit-b.deposit)[0]
+
+  // Under a year, nothing locks up in time. The money-market fund stays
+  // withdrawable, so it is the only honest suggestion — and its rate is a past
+  // average, which the copy has to say out loud.
+  const mm = FUNDS[0]
+  const years = monthsLeft / 12
+  const deposit = depositFor(target, mm.rate, years)
+  if (deposit >= mm.min) {
+    return { product:mm, kind:"fund", deposit, matures:target, earned:target-deposit, years }
+  }
+  return null
+}
+
+/** What it takes to simply put the money aside, for goals no product suits. */
+function savePlanForGoal(target:number, monthsLeft:number): GoalSavePlan | null {
+  if (target <= 0) return null
+  const months = Math.max(1, monthsLeft)
+  return { monthly: Math.ceil(target / months), months }
+}
+
+const egp = (n:number) => `EGP ${Math.round(n).toLocaleString()}`
+
+/** Human duration for a plan: whole years for certificates, months otherwise. */
+const planTerm = (plan:GoalPlan, monthsLeft:number) =>
+  plan.kind === "certificate"
+    ? `${plan.years} ${plan.years === 1 ? "year" : "years"}`
+    : `${monthsLeft} ${monthsLeft === 1 ? "month" : "months"}`
+
+/** One card in the Home tips list. `onTap` makes it a control. */
+interface TipCard { icon:string; color:string; title:string; tip:string; note?:string; onTap?:()=>void }
+
+/**
+ * Turns a goal into the single most useful sentence we can put on Home. Falls
+ * back down a ladder: a certificate that lands on the number, then a fund, then
+ * plain monthly saving, then the generic pitch when there is no goal at all.
+ */
+function buildGoalTip(opts:{
+  goalName:string|null; target:number; monthsLeft:number; brand:string; gold:string; onInvest:()=>void
+}): TipCard {
+  const { goalName, target, monthsLeft, brand, gold, onInvest } = opts
+  const generic: TipCard = {
+    icon:"chart", color:brand, title:"Start with a certificate",
+    tip:`${CERTS[0].name}: from ${egp(CERTS[0].min)}, ${CERTS[0].rate}% a year fixed for ${CERTS[0].dur.toLowerCase()}.`,
+    onTap:onInvest,
+  }
+  if (!goalName || target <= 0) return generic
+
+  const plan = planForGoal(target, monthsLeft)
+  if (plan) {
+    const term = planTerm(plan, monthsLeft)
+    const isCert = plan.kind === "certificate"
+    return {
+      icon:"chart", color: isCert ? brand : gold,
+      title:`${egp(plan.deposit)} now covers ${goalName}`,
+      tip: isCert
+        ? `Put ${egp(plan.deposit)} into the ${plan.product.name} and it matures at ${egp(plan.matures)} in ${term} — ${egp(plan.earned)} of ${goalName} earned rather than saved.`
+        : `Nothing locks up in time for this date. ${egp(plan.deposit)} in the ${plan.product.name} would reach about ${egp(plan.matures)} in ${term}, and you can withdraw any business day.`,
+      // The prompt's disclaimer rule applies here too: every figure we show
+      // has to say it can move before the user acts on it.
+      note: isCert
+        ? "Rates change with Central Bank decisions — confirm today's figure in Invest before you commit."
+        : `${plan.product.rate}% is this fund's past average, not a promise. Funds move in value and can fall. Confirm current figures before you commit.`,
+      onTap:onInvest,
+    }
+  }
+
+  const save = savePlanForGoal(target, monthsLeft)
+  if (save) {
+    return {
+      icon:"wallet", color:gold,
+      title:`${egp(save.monthly)} a month reaches ${goalName}`,
+      tip: monthsLeft > 0
+        ? `Your date is ${save.months} ${save.months===1?"month":"months"} out. Certificates run a year at minimum, so this one is a savings goal — ${egp(save.monthly)} a month gets you there.`
+        : `This goal has no date left to run, so nothing can grow into it. Set a new end date, or put ${egp(target)} aside directly.`,
+      onTap:onInvest,
+    }
+  }
+  return generic
+}
+
 type NotifType = "reminder"|"certificate"|"growth"
 interface Notif { id:number; type:NotifType; title:string; body:string; time:string; read:boolean }
 
@@ -901,6 +1037,17 @@ function HomeScreen({ nav, userGoals, builtinActive, homeCardGoalId, setHomeCard
     const days = Math.ceil(ms/86400000)
     return days > 30 ? `${Math.ceil(days/30)} months` : `${days} days`
   }
+
+  // The first tip is computed from the goal above it rather than being the same
+  // generic certificate pitch for everyone. Built off what is still needed, so
+  // it shrinks as holdings come in.
+  const goalTip = buildGoalTip({
+    goalName: selectedBuiltin ? null : (selectedGoal?.name ?? null),
+    target: goalRemaining || goalBudgetNum,
+    monthsLeft: monthsUntil(selectedGoal?.end),
+    brand: t.brand, gold: t.gold,
+    onInvest: ()=>nav("invest"),
+  })
 
   const prevGoal = () => {
     if (allDisplayGoals.length < 2) return
@@ -1013,16 +1160,19 @@ function HomeScreen({ nav, userGoals, builtinActive, homeCardGoalId, setHomeCard
     <div id="tut-home-tips" style={{ margin:"14px 16px 0" }}>
       <div style={{ fontSize:11, fontWeight:800, color:t.sub, letterSpacing:1.2, textTransform:"uppercase" as const, marginBottom:10 }}>Tips to Reach Your Goal</div>
       {([
-        { icon:"chart",   color:t.brand,  title:"Start with a certificate", tip:`${CERTS[0].name}: from EGP ${CERTS[0].min.toLocaleString()}, ${CERTS[0].rate}% a year fixed for ${CERTS[0].dur.toLowerCase()}.` },
+        goalTip,
         { icon:"wallet",  color:t.gold,  title:"Save 20% weekly",   tip:"Set aside 20% of your allowance every week. Small habits build into big balances over time." },
         { icon:"list",    color:t.brand, title:"Review your spending", tip:"Use Daily Review to spot where your money goes and find savings opportunities each day." },
-      ]).map((item,i)=>(
-        <div key={i} style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderRadius:20, padding:"14px 16px", marginBottom:10, display:"flex", gap:12, alignItems:"flex-start", boxShadow:`0 1px 6px rgba(0,0,0,${t.dm?0.18:0.05})`, border:`1px solid ${item.color}18` }}>
+      ] as TipCard[]).map((item,i)=>(
+        <div key={i} onClick={item.onTap} role={item.onTap ? "button" : undefined} tabIndex={item.onTap ? 0 : undefined}
+          style={{ background:t.card, backdropFilter:t.blur, WebkitBackdropFilter:t.blur, borderRadius:20, padding:"14px 16px", marginBottom:10, display:"flex", gap:12, alignItems:"flex-start", boxShadow:`0 1px 6px rgba(0,0,0,${t.dm?0.18:0.05})`, border:`1px solid ${item.color}${item.onTap?"45":"18"}`, cursor:item.onTap?"pointer":"default" }}>
           <div style={{ width:38, height:38, borderRadius:12, background:`${item.color}${t.dm?"22":"14"}`, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}><Ic n={item.icon} c={item.color} s={18}/></div>
-          <div style={{ flex:1 }}>
+          <div style={{ flex:1, minWidth:0 }}>
             <div style={{ fontSize:13, fontWeight:800, color:t.text, marginBottom:4 }}>{item.title}</div>
             <div style={{ fontSize:12, color:t.sub, lineHeight:1.65 }}>{item.tip}</div>
+            {item.note && <div style={{ fontSize:10.5, color:t.sub, opacity:0.75, lineHeight:1.55, marginTop:6 }}>{item.note}</div>}
           </div>
+          {item.onTap && <Ic n="right" c={item.color} s={16}/>}
         </div>
       ))}
     </div>
@@ -2895,6 +3045,15 @@ export default function App() {
         if (streak) {
           p = { ...p, stats: { ...p.stats, streakDays: streak["stats.streakDays"] as number, lastActive: streak["stats.lastActive"] as string } }
           patchProfile(user.uid, streak).catch(()=>{ /* applied locally regardless */ })
+        }
+        // Accounts created before signUp waited for updateProfile stored the
+        // email prefix as the name. The auth record has the real one — adopt
+        // it and repair the document so Home stops greeting "fayedziad1".
+        const realName = (user.displayName || "").trim()
+        if (realName && isEmailPrefixName(p.displayName, p.email || user.email) && !isEmailPrefixName(realName, user.email)) {
+          const initials = initialsOf(realName)
+          p = { ...p, displayName: realName, initials }
+          patchProfile(user.uid, { displayName: realName, initials }).catch(()=>{ /* cosmetic */ })
         }
         setProfile(p)
         setScreen(p.flags.onboardingComplete ? "home" : "onboarding")
