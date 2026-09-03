@@ -4,8 +4,8 @@ import { askAcsend, llmConfigured } from "./lib/llm"
 import { useAuth, friendlyAuthError, type SessionUser } from "./lib/useAuth"
 import { firebaseConfigured } from "./lib/firebase"
 import {
-  loadProfile, createProfile, patchProfile, loadGoals, addGoal,
-  loadHoldings, addHolding, describeHoldings, DEFAULT_PROFILE, initialsOf, isEmailPrefixName, readMirror, mirrorProfile,
+  loadProfile, createProfile, patchProfile, subscribeProfile, addGoal, updateGoal, deleteGoal, subscribeGoals,
+  addHolding, subscribeHoldings, describeHoldings, DEFAULT_PROFILE, initialsOf, isEmailPrefixName, readMirror, mirrorProfile,
   type UserProfile, type GoalDoc, type HoldingDoc, type TourKey,
 } from "./lib/db"
 import logoImg from "./imports/ChatGPT_Image_Aug_20__2026__12_06_04_PM.png"
@@ -87,11 +87,18 @@ interface AppState {
   patch: (p:Record<string,unknown>)=>void
   holdings: HoldingDoc[]
   buy: (h:Omit<HoldingDoc,"id">)=>Promise<void>
+  /** Goal writes. Every one of these persists; the screens must not edit the
+   *  goals array on their own, or the change lives only until the next
+   *  snapshot from Firestore replaces it. */
+  createGoal: (g:Omit<GoalEntry,"id">)=>void
+  editGoal: (id:string, vals:Partial<Omit<GoalEntry,"id"|"type">>)=>void
+  removeGoal: (id:string)=>void
   logOut: ()=>void
   isDemo: boolean
 }
 const AppCtx = createContext<AppState>({
-  uid:"", profile:null, patch:()=>{}, holdings:[], buy:async()=>{}, logOut:()=>{}, isDemo:true,
+  uid:"", profile:null, patch:()=>{}, holdings:[], buy:async()=>{},
+  createGoal:()=>{}, editGoal:()=>{}, removeGoal:()=>{}, logOut:()=>{}, isDemo:true,
 })
 const useApp = () => useContext(AppCtx)
 
@@ -2037,9 +2044,8 @@ function GoalForm({ title, initial, onSave, onCancel, saveLabel="Save Goal" }: {
   </div>
 }
 
-function GoalsScreen({ userGoals, setUserGoals, builtinActive, setBuiltinActive, homeCardGoalId, setHomeCardGoalId }: {
+function GoalsScreen({ userGoals, builtinActive, setBuiltinActive, homeCardGoalId, setHomeCardGoalId }: {
   userGoals:GoalEntry[];
-  setUserGoals:React.Dispatch<React.SetStateAction<GoalEntry[]>>;
   builtinActive:boolean[];
   setBuiltinActive:React.Dispatch<React.SetStateAction<boolean[]>>;
   homeCardGoalId:string|null;
@@ -2050,7 +2056,7 @@ function GoalsScreen({ userGoals, setUserGoals, builtinActive, setBuiltinActive,
   const [detailIdx, setDetailIdx] = useState(0)
   const [editingId, setEditingId] = useState<string>("")
   const track = t.dm?"#1E3D2C":"#E5E7EB"
-  const { profile, holdings } = useApp()
+  const { profile, holdings, createGoal, editGoal, removeGoal } = useApp()
   const goalCtx: GoalCtx = { profile, holdings, goalCount: userGoals.length }
   const BUILTINS = BUILTIN_GOALS.map(g => evalBuiltin(g, goalCtx))
   const investedTotal = holdings.reduce((n,h)=>n+h.amount, 0)
@@ -2078,14 +2084,14 @@ function GoalsScreen({ userGoals, setUserGoals, builtinActive, setBuiltinActive,
     }
   }
   const deleteUserGoal = (g:GoalEntry) => {
-    setUserGoals(p => p.filter(x => x.id !== g.id))
+    removeGoal(g.id)
     if (homeCardGoalId === g.id) {
       const remaining = getAllDisplayGoals(userGoals.filter(x=>x.id!==g.id), builtinActive)
       setHomeCardGoalId(remaining.length > 0 ? remaining[0].id : null)
     }
   }
   const saveEdit = (vals:{name:string;budget:string;start:string;end:string}) => {
-    setUserGoals(p => p.map(x => x.id===editingId ? {...x,...vals} : x))
+    editGoal(editingId, vals)
     setView("list")
   }
 
@@ -2149,9 +2155,7 @@ function GoalsScreen({ userGoals, setUserGoals, builtinActive, setBuiltinActive,
       saveLabel="Create Goal"
       onCancel={()=>setView("list")}
       onSave={vals=>{
-        const newGoal:GoalEntry = { id: newLocalId(), ...vals, type:"user" }
-        setUserGoals(p=>[...p, newGoal])
-        if (!homeCardGoalId) setHomeCardGoalId(newGoal.id)
+        createGoal({ ...vals, type:"user" })
         setView("list")
       }}
     />
@@ -2923,6 +2927,20 @@ const TUTORIALS: Partial<Record<Screen, TutStep[]>> = {
   ],
 }
 
+/** Centre `el` inside its nearest scrollable ancestor, touching nothing above it. */
+function scrollWithinPane(el:HTMLElement) {
+  let pane: HTMLElement | null = el.parentElement
+  while (pane) {
+    const oy = getComputedStyle(pane).overflowY
+    if ((oy === "auto" || oy === "scroll") && pane.scrollHeight > pane.clientHeight + 4) break
+    pane = pane.parentElement
+  }
+  if (!pane) return
+  const er = el.getBoundingClientRect(), pr = pane.getBoundingClientRect()
+  const delta = (er.top - pr.top) - (pr.height - er.height) / 2
+  pane.scrollTo({ top: Math.max(0, pane.scrollTop + delta), behavior: "smooth" })
+}
+
 function TutorialOverlay({ steps, frameRef, onDone, scale=1 }: {
   steps:TutStep[]; frameRef:React.RefObject<HTMLDivElement|null>; onDone:()=>void; scale?:number
 }) {
@@ -2949,7 +2967,11 @@ function TutorialOverlay({ steps, frameRef, onDone, scale=1 }: {
       })
     }
     const el = step.target ? document.getElementById(step.target) : null
-    if (el) el.scrollIntoView({ behavior:"smooth", block:"center" })
+    // scrollIntoView walks up and scrolls EVERY scrollable ancestor, so
+    // spotlighting a control near the bottom of a tab dragged the whole app
+    // frame up and left that screen's header clipped after the tour ended.
+    // Scroll only the pane the target actually lives in.
+    if (el) scrollWithinPane(el)
     raf = window.setTimeout(measure, el ? 320 : 0)
     return ()=>window.clearTimeout(raf)
   }, [i, step, frameRef, scale])
@@ -3029,59 +3051,91 @@ export default function App() {
   const lang = profile?.prefs?.language ?? "en"
   const t = dm ? darkTheme : lightTheme
 
-  /* Load (or create) the profile, goals and holdings once a session exists. */
+  /* Bootstrap the profile with a one-time authoritative read, then switch to a
+     live subscription for as long as the session lasts — so later changes
+     (a flag flipped from another tab or device) keep pushing in, instead of
+     the app only ever showing what a single getDoc caught at sign-in.
+     The one-time read has to come first: onSnapshot's very first event on a
+     browser that has never cached this document can fire with exists()
+     false before the server round trip lands, and treating that as "brand
+     new user" called createProfile — a non-merging setDoc — which wiped an
+     existing profile's flags/prefs/stats back to defaults. Resolving
+     existence with getDoc up front (which also warms the cache the listener
+     reads from) means the listener never has to guess. */
   useEffect(()=>{
-    let cancelled = false
     if (!user) { setProfile(null); setProfileReady(ready); setHoldings([]); setUserGoals([]); return }
     setProfileReady(false)
-    ;(async ()=>{
+    let cancelled = false
+    let unsubProfile = () => {}
+
+    const settle = (p:UserProfile) => {
+      if (cancelled) return
+      setProfile(p)
+      setScreen(p.flags.onboardingComplete ? "home" : "onboarding")
+      setProfileReady(true)
+    }
+
+    ;(async () => {
       try {
         let p = await loadProfile(user.uid)
         if (!p) p = await createProfile(user.uid, user.displayName, user.email)
         if (cancelled) return
-        // Show the app as soon as the profile is known — goals and holdings are
-        // two more round trips and nothing on first paint depends on them.
+
         const streak = streakUpdate(p)
         if (streak) {
           p = { ...p, stats: { ...p.stats, streakDays: streak["stats.streakDays"] as number, lastActive: streak["stats.lastActive"] as string } }
           patchProfile(user.uid, streak).catch(()=>{ /* applied locally regardless */ })
         }
-        // Accounts created before signUp waited for updateProfile stored the
-        // email prefix as the name. The auth record has the real one — adopt
-        // it and repair the document so Home stops greeting "fayedziad1".
+        // The auth record is the source of truth for who this is; the document
+        // can disagree two ways. It may hold the email's local part, from
+        // accounts created before signUp waited for updateProfile. Or it may
+        // hold no identity at all — a document whose create never landed gets
+        // rebuilt by merge-patches (flags.*, stats.*) that write only their own
+        // paths, leaving a profile with no name for every screen to fall back
+        // to the generic "NBE Youth" placeholder on. Repair both here.
         const realName = (user.displayName || "").trim()
-        if (realName && isEmailPrefixName(p.displayName, p.email || user.email) && !isEmailPrefixName(realName, user.email)) {
-          const initials = initialsOf(realName)
-          p = { ...p, displayName: realName, initials }
-          patchProfile(user.uid, { displayName: realName, initials }).catch(()=>{ /* cosmetic */ })
+        const storedName = p.displayName.trim()
+        const nameIsStale = !storedName
+          || (isEmailPrefixName(storedName, p.email || user.email) && !isEmailPrefixName(realName, user.email))
+        const repair: Record<string,unknown> = {}
+        if (realName && nameIsStale) {
+          repair.displayName = realName
+          repair.initials = initialsOf(realName)
         }
-        setProfile(p)
-        setScreen(p.flags.onboardingComplete ? "home" : "onboarding")
-        setProfileReady(true)
-        Promise.all([loadGoals(user.uid), loadHoldings(user.uid)])
-          .then(([g, h]) => {
-            if (cancelled) return
-            setUserGoals(g.map(d=>({ id:d.id, name:d.name, budget:d.budget, start:d.start, end:d.end, type:d.type, pct:d.pct })))
-            setHoldings(h)
-            setHomeCardGoalId(prev => prev ?? g[0]?.id ?? null)
-          })
-          .catch(()=>{ /* lists stay empty until the next load */ })
+        if (!p.email && user.email) repair.email = user.email
+        if (Object.keys(repair).length) {
+          p = { ...p, ...repair } as UserProfile
+          patchProfile(user.uid, repair).catch(()=>{ /* cosmetic */ })
+        }
+        settle(p)
+
+        // Existence is now confirmed and cached — safe to trust every future
+        // event from here on, including a same-cycle "not found" glitch.
+        unsubProfile = subscribeProfile(user.uid, (np, exists) => {
+          if (cancelled || !exists || !np) return
+          setProfile(np)
+        })
       } catch {
         // A failed read is not a new user. Fall back to the last profile we
         // saw; only a genuinely unknown account starts onboarding.
         if (cancelled) return
         const cached = readMirror(user.uid)
-        const p = cached ?? DEFAULT_PROFILE(user.displayName, user.email)
-        setProfile(p)
-        setScreen(p.flags.onboardingComplete ? "home" : "onboarding")
-      } finally {
-        if (!cancelled) setProfileReady(true)
+        settle(cached ?? DEFAULT_PROFILE(user.displayName, user.email))
       }
     })()
-    return ()=>{ cancelled = true }
+
+    const unsubGoals = subscribeGoals(user.uid, g => {
+      if (cancelled) return
+      setUserGoals(g.map(d=>({ id:d.id, name:d.name, budget:d.budget, start:d.start, end:d.end, type:d.type, pct:d.pct })))
+      setHomeCardGoalId(prev => prev ?? g[0]?.id ?? null)
+    })
+    const unsubHoldings = subscribeHoldings(user.uid, h => { if (!cancelled) setHoldings(h) })
+
+    return () => { cancelled = true; unsubProfile(); unsubGoals(); unsubHoldings() }
   }, [user, ready])
 
-  /* Optimistic local update + write-behind to Firestore. */
+  /* Optimistic local update + write-behind to Firestore. The live profile
+     subscription above reconciles this shortly after with the server's copy. */
   const patch = useCallback((p:Record<string,unknown>) => {
     setProfile(prev => {
       if (!prev) return prev
@@ -3098,16 +3152,46 @@ export default function App() {
     if (uid) patchProfile(uid, p).catch(()=>{ /* offline: local state still applied */ })
   }, [uid])
 
-  /* Optimistic. Firestore's addDoc only settles on server ack, so awaiting it
-     hangs the UI whenever the backend is unreachable — write behind instead. */
+  /* With Firestore configured, the live holdings subscription reflects a new
+     purchase (its own local-cache echo included) within a beat of the write —
+     no manual append needed there. localStorage has no such push mechanism,
+     so the demo build still appends optimistically. */
   const buy = useCallback(async (h:Omit<HoldingDoc,"id">) => {
     if (!uid) return
-    const local: HoldingDoc = { ...h, id:newLocalId() }
-    setHoldings(prev => [local, ...prev])
-    addHolding(uid, h)
-      .then(saved => setHoldings(prev => prev.map(x => x.id===local.id ? saved : x)))
+    if (isDemo) {
+      const local: HoldingDoc = { ...h, id:newLocalId() }
+      setHoldings(prev => [local, ...prev])
+    }
+    addHolding(uid, h).catch(()=>{ /* queued by the SDK; local entry stands */ })
+  }, [uid, isDemo])
+
+  /* Goal writes, on the same rule as buy: Firestore's subscription is what
+     refreshes the list, so only the demo build touches state directly. Before
+     these existed the Goals screen edited the array in place and wrote
+     nothing, so an edited budget survived exactly until the next snapshot. */
+  const createGoal = useCallback((g:Omit<GoalEntry,"id">) => {
+    if (!uid) return
+    if (isDemo) {
+      const local: GoalEntry = { ...g, id:newLocalId() }
+      setUserGoals(prev => [...prev, local])
+      setHomeCardGoalId(prev => prev ?? local.id)
+    }
+    addGoal(uid, { name:g.name, budget:g.budget, start:g.start, end:g.end, type:g.type, pct:g.pct ?? 0 })
       .catch(()=>{ /* queued by the SDK; local entry stands */ })
-  }, [uid])
+  }, [uid, isDemo])
+
+  const editGoal = useCallback((id:string, vals:Partial<Omit<GoalEntry,"id"|"type">>) => {
+    if (!uid) return
+    if (isDemo) setUserGoals(prev => prev.map(g => g.id===id ? { ...g, ...vals } : g))
+    updateGoal(uid, id, vals).catch(()=>{ /* queued by the SDK */ })
+  }, [uid, isDemo])
+
+  const removeGoal = useCallback((id:string) => {
+    if (!uid) return
+    if (isDemo) setUserGoals(prev => prev.filter(g => g.id !== id))
+    setHomeCardGoalId(prev => prev === id ? null : prev)
+    deleteGoal(uid, id).catch(()=>{ /* queued by the SDK */ })
+  }, [uid, isDemo])
 
   /* Keep the page background behind the app matching the theme, so the iOS
      safe areas and any overscroll never flash the default page colour. */
@@ -3127,8 +3211,7 @@ export default function App() {
   }, [screen])
 
   const handleGoalSet = (entry: GoalEntry) => {
-    setUserGoals(p => [...p, entry])
-    setHomeCardGoalId(prev => prev ?? entry.id)
+    createGoal(entry)
     patch({
       "flags.firstGoalSet": true,
       "flags.onboardingComplete": true,
@@ -3136,10 +3219,6 @@ export default function App() {
       "stats.points": (profile?.stats?.points ?? 0) + PTS_GOAL,
       "stats.level": progression((profile?.stats?.points ?? 0) + PTS_GOAL).level,
     })
-    if (uid) {
-      addGoal(uid, { name:entry.name, budget:entry.budget, start:entry.start, end:entry.end, type:entry.type, pct:entry.pct ?? 0 })
-        .catch(()=>{ /* keep the local entry */ })
-    }
     setScreen("home")
   }
 
@@ -3192,7 +3271,7 @@ export default function App() {
       case "invest":        return <InvestScreen/>
       case "learn":         return <LearnScreen/>
       case "lesson":        return <LessonScreen nav={setScreen}/>
-      case "goals":         return <GoalsScreen userGoals={userGoals} setUserGoals={setUserGoals} builtinActive={builtinActive} setBuiltinActive={setBuiltinActive} homeCardGoalId={homeCardGoalId} setHomeCardGoalId={setHomeCardGoalId}/>
+      case "goals":         return <GoalsScreen userGoals={userGoals} builtinActive={builtinActive} setBuiltinActive={setBuiltinActive} homeCardGoalId={homeCardGoalId} setHomeCardGoalId={setHomeCardGoalId}/>
       case "rewards":       return <RewardsScreen/>
       case "dailyreview":   return <DailyReviewScreen nav={setScreen}/>
       case "notifications": return <NotificationsScreen nav={setScreen}/>
@@ -3215,7 +3294,7 @@ export default function App() {
 
   return (
     <ThCtx.Provider value={themeValue}>
-      <AppCtx.Provider value={{ uid, profile, patch, holdings, buy, logOut, isDemo }}>
+      <AppCtx.Provider value={{ uid, profile, patch, holdings, buy, createGoal, editGoal, removeGoal, logOut, isDemo }}>
         <div style={{
           height:"100dvh", minHeight:"100dvh", display:"flex", flexDirection:"column", alignItems:"center",
           justifyContent:"flex-start", gap:0,

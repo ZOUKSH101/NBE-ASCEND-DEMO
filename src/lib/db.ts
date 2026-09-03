@@ -1,5 +1,5 @@
 import {
-  doc, getDoc, setDoc, collection, addDoc, getDocs,
+  doc, getDoc, setDoc, updateDoc, deleteDoc, collection, addDoc, getDocs, onSnapshot,
   serverTimestamp, query, orderBy,
 } from "firebase/firestore"
 import { db, firebaseConfigured } from "./firebase"
@@ -167,6 +167,35 @@ export async function loadProfile(uid:string): Promise<UserProfile | null> {
   return p
 }
 
+/**
+ * Live profile listener. Firestore pushes every change the moment it lands —
+ * including a flag flipped from another tab or device — instead of the app
+ * only ever seeing what a one-time getDoc caught at sign-in. `exists` is
+ * false only for a brand-new uid with no document yet, so the caller knows to
+ * create one rather than treating a transient miss as a new user.
+ * With no Firebase config there is no server to subscribe to, so this reads
+ * localStorage once and returns a no-op unsubscribe.
+ */
+export function subscribeProfile(
+  uid:string, cb:(profile:UserProfile|null, exists:boolean)=>void, onError?:(err:unknown)=>void,
+): () => void {
+  if (!firebaseConfigured || !db) {
+    const local = readLS<Partial<UserProfile>|null>(LS.profile(uid), null)
+    cb(local ? normalizeProfile(local) : null, !!local)
+    return () => {}
+  }
+  return onSnapshot(
+    doc(db, "users", uid),
+    snap => {
+      if (!snap.exists()) { cb(null, false); return }
+      const p = normalizeProfile(snap.data() as Partial<UserProfile>)
+      writeMirror(uid, p)
+      cb(p, true)
+    },
+    err => onError?.(err),
+  )
+}
+
 export async function createProfile(uid:string, displayName:string, email:string): Promise<UserProfile> {
   const profile = DEFAULT_PROFILE(displayName, email)
   if (!firebaseConfigured || !db) { writeLS(LS.profile(uid), profile); return profile }
@@ -220,6 +249,18 @@ export async function loadGoals(uid:string): Promise<GoalDoc[]> {
   return snap.docs.map(d=>({ id:d.id, ...(d.data() as Omit<GoalDoc,"id">) }))
 }
 
+/** Live goals listener — see subscribeProfile for why this beats a one-time read. */
+export function subscribeGoals(uid:string, cb:(goals:GoalDoc[])=>void): () => void {
+  if (!firebaseConfigured || !db) {
+    cb(readLS<GoalDoc[]>(LS.goals(uid), []))
+    return () => {}
+  }
+  return onSnapshot(
+    query(collection(db, "users", uid, "goals"), orderBy("createdAt", "asc")),
+    snap => cb(snap.docs.map(d=>({ id:d.id, ...(d.data() as Omit<GoalDoc,"id">) }))),
+  )
+}
+
 export async function addGoal(uid:string, goal:Omit<GoalDoc,"id">): Promise<GoalDoc> {
   if (!firebaseConfigured || !db) {
     const entry = { ...goal, id: localId() }
@@ -230,12 +271,42 @@ export async function addGoal(uid:string, goal:Omit<GoalDoc,"id">): Promise<Goal
   return { ...goal, id: ref.id }
 }
 
+/** Edit an existing goal. Only the named fields change; the rest stand. */
+export async function updateGoal(uid:string, goalId:string, patch:Partial<Omit<GoalDoc,"id">>): Promise<void> {
+  if (!firebaseConfigured || !db) {
+    const goals = readLS<GoalDoc[]>(LS.goals(uid), [])
+    writeLS(LS.goals(uid), goals.map(g => g.id === goalId ? { ...g, ...patch } : g))
+    return
+  }
+  await updateDoc(doc(db, "users", uid, "goals", goalId), patch)
+}
+
+export async function deleteGoal(uid:string, goalId:string): Promise<void> {
+  if (!firebaseConfigured || !db) {
+    writeLS(LS.goals(uid), readLS<GoalDoc[]>(LS.goals(uid), []).filter(g => g.id !== goalId))
+    return
+  }
+  await deleteDoc(doc(db, "users", uid, "goals", goalId))
+}
+
 /* ─── Holdings (certificate / fund subscriptions) ──────────────────────── */
 
 export async function loadHoldings(uid:string): Promise<HoldingDoc[]> {
   if (!firebaseConfigured || !db) return readLS<HoldingDoc[]>(LS.holds(uid), [])
   const snap = await getDocs(query(collection(db, "users", uid, "holdings"), orderBy("purchasedAt", "desc")))
   return snap.docs.map(d=>({ id:d.id, ...(d.data() as Omit<HoldingDoc,"id">) }))
+}
+
+/** Live holdings listener — see subscribeProfile for why this beats a one-time read. */
+export function subscribeHoldings(uid:string, cb:(holdings:HoldingDoc[])=>void): () => void {
+  if (!firebaseConfigured || !db) {
+    cb(readLS<HoldingDoc[]>(LS.holds(uid), []))
+    return () => {}
+  }
+  return onSnapshot(
+    query(collection(db, "users", uid, "holdings"), orderBy("purchasedAt", "desc")),
+    snap => cb(snap.docs.map(d=>({ id:d.id, ...(d.data() as Omit<HoldingDoc,"id">) }))),
+  )
 }
 
 export async function addHolding(uid:string, holding:Omit<HoldingDoc,"id">): Promise<HoldingDoc> {
